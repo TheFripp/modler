@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modler - Parametric 3D Modeling (Refactored)</title>
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <div id="app">
+        <div id="toolbar" class="toolbar">
+            <div class="tool-group">
+                <button id="tool-select" class="tool-btn active" data-tool="select" title="Select (1)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <path d="M2 2 L8 14 L11 11 L18 18 L2 2" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+                <button id="tool-push" class="tool-btn" data-tool="push" title="Push/Pull (2)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <rect x="3" y="8" width="10" height="6" stroke="currentColor" stroke-width="2" fill="none"/>
+                        <path d="M13 8 L17 11 L13 14" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+                <button id="tool-move" class="tool-btn" data-tool="move" title="Move (3)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <path d="M10 2 L10 18 M2 10 L18 10" stroke="currentColor" stroke-width="2"/>
+                        <path d="M10 2 L7 5 M10 2 L13 5" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+                <button id="tool-rotate" class="tool-btn" data-tool="rotate" title="Rotate (4)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <path d="M10 2 A8 8 0 0 1 18 10" stroke="currentColor" stroke-width="2" fill="none"/>
+                        <path d="M10 2 L8 5 M10 2 L13 4" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="tool-group">
+                <button id="tool-rectangle" class="tool-btn" data-tool="rectangle" title="Rectangle (5)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <rect x="3" y="5" width="14" height="10" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+                <button id="tool-circle" class="tool-btn" data-tool="circle" title="Circle (6)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="2" fill="none"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="tool-group">
+                <button id="tool-settings" class="tool-btn" title="Settings (U)">
+                    <svg width="20" height="20" viewBox="0 0 20 20">
+                        <path d="M10 1 L12 6 L18 6 L13 10 L15 19 L10 14 L5 19 L7 10 L2 6 L8 6 Z" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                        <circle cx="10" cy="10" r="2" stroke="currentColor" stroke-width="1" fill="none"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="properties-panel" class="properties-panel">
+            <div class="panel-header">
+                <h3>Properties</h3>
+                <button id="scene-settings-btn" class="panel-toggle" title="Scene Settings">⚙</button>
+            </div>
+            <div class="panel-content">
+                <div id="object-properties">No objects selected</div>
+            </div>
+        </div>
+
+        <div id="scene-settings-panel" class="properties-panel" style="display: none; top: 60px;">
+            <div class="panel-header">
+                <h3>Scene Settings</h3>
+                <button id="scene-settings-close" class="panel-toggle">×</button>
+            </div>
+            <div class="panel-content">
+                <div class="property-group">
+                    <h4>Background</h4>
+                    <div class="property-row">
+                        <span class="property-label">Color:</span>
+                        <input type="color" id="bg-color" value="#1a1a1a" />
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Grid</h4>
+                    <div class="property-row">
+                        <span class="property-label">Size:</span>
+                        <input class="property-input" id="grid-size" value="50" />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Divisions:</span>
+                        <input class="property-input" id="grid-divisions" value="50" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="ui-settings-panel" class="properties-panel" style="display: none; top: 10px; right: 300px; width: 320px;">
+            <div class="panel-header">
+                <h3>UI Settings</h3>
+                <button id="ui-settings-close" class="panel-toggle">×</button>
+            </div>
+            <div class="panel-content">
+                <div class="property-group">
+                    <h4>Background</h4>
+                    <div class="property-row">
+                        <span class="property-label">Color:</span>
+                        <input type="color" id="ui-bg-color" value="#1a1a1a" />
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Grid</h4>
+                    <div class="property-row">
+                        <span class="property-label">Size:</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-grid-size" type="number" value="50" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Divisions:</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-grid-divisions" type="number" value="50" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Sub-Divisions:</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-grid-subdivisions" type="number" value="10" min="1" max="50" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Main Color:</span>
+                        <input type="color" id="ui-grid-main-color" value="#666666" />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Sub Color:</span>
+                        <input type="color" id="ui-grid-sub-color" value="#333333" />
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Selection (Blue)</h4>
+                    <div class="property-row">
+                        <span class="property-label">Edge Color:</span>
+                        <input type="color" id="ui-edge-color" value="#0078d4" />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Thickness (px):</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-edge-thickness" type="number" min="1" max="20" step="1" value="2" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Corner Size:</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-corner-size" type="number" min="0.02" max="0.3" step="0.01" value="0.05" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Highlights (Orange/Green)</h4>
+                    <div class="property-row">
+                        <span class="property-label">Hover Color:</span>
+                        <input type="color" id="ui-hover-color" value="#ff6600" />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Snap Color:</span>
+                        <input type="color" id="ui-snap-color" value="#00ff00" />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Thickness (px):</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-highlight-thickness" type="number" min="1" max="20" step="1" value="1" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Rendering</h4>
+                    <div class="property-row">
+                        <span class="property-label">Shadows:</span>
+                        <input type="checkbox" id="ui-shadows-enabled" checked />
+                    </div>
+                    <div class="property-row">
+                        <span class="property-label">Always Show Edges:</span>
+                        <input type="checkbox" id="ui-wireframe-mode" />
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Interaction</h4>
+                    <div class="property-row">
+                        <span class="property-label">Hit Area Size:</span>
+                        <div class="property-input-container">
+                            <input class="property-input" id="ui-hit-area" type="number" min="12" max="48" step="4" value="24" />
+                            <div class="property-arrows">
+                                <div class="property-arrow-up">▲</div>
+                                <div class="property-arrow-down">▼</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="property-group">
+                    <h4>Actions</h4>
+                    <div class="property-row">
+                        <button id="save-settings" class="property-button">Save Settings</button>
+                        <button id="load-settings" class="property-button">Load Settings</button>
+                    </div>
+                    <div class="property-row">
+                        <button id="reset-settings" class="property-button">Reset to Default</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="viewport" class="viewport">
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div id="status-bar" class="status-bar">
+            <span id="coordinates">X: 0.0, Y: 0.0, Z: 0.0</span>
+            <span id="units">Units: mm</span>
+            <span id="tool-status">Select Tool</span>
+        </div>
+
+        <div id="dimension-input" class="dimension-input hidden">
+            <input type="text" id="dimension-value" placeholder="Enter dimension">
+            <div class="dimension-buttons">
+                <button id="dimension-confirm">✓</button>
+                <button id="dimension-cancel">✗</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Three.js -->
+    <script src="https://unpkg.com/three@0.145.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.145.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <!-- Core Systems -->
+    <script src="js/core/Scene.js"></script>
+    <script src="js/core/Renderer.js"></script>
+    <script src="js/core/EventManager.js"></script>
+    
+    <!-- Centralized Systems (NEW - must load before other geometry systems) -->
+    <script src="js/core/StateManager.js"></script>
+    <script src="js/core/MaterialManager.js"></script>
+    <script src="js/core/ObjectManager.js"></script>
+    <script src="js/core/CameraManager.js"></script>
+    <script src="js/core/ConfigurationManager.js"></script>
+    <script src="js/core/HighlightManager.js"></script>
+    <script src="js/core/SnapManager.js"></script>
+    
+    <!-- Geometry and Highlighting -->
+    <script src="js/geometry/GeometryManager.js"></script>
+    <script src="js/geometry/SelectionManager.js"></script>
+    <script src="js/geometry/Container.js"></script>
+    <script src="js/core/Grid.js"></script>
+    
+    <!-- Tools -->
+    <script src="js/tools/Tool.js"></script>
+    <script src="js/tools/SelectTool.js"></script>
+    <script src="js/tools/RectangleTool.js"></script>
+    <script src="js/tools/PushPullTool.js"></script>
+    <script src="js/tools/MoveTool.js"></script>
+    <script src="js/tools/ToolManager.js"></script>
+    
+    <!-- UI -->
+    <script src="js/ui/SettingsManager.js"></script>
+    <script src="js/ui/HierarchyPanel.js"></script>
+    
+    <!-- Main Application -->
+    <script src="js/main-refactored.js"></script>
+</body>
+</html>
