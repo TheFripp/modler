@@ -239,8 +239,16 @@ class SnapManager {
         return targets;
     }
     
-    getBestSnapTarget(position, excludeObjects = []) {
-        const targets = this.detectSnapTargets(position, excludeObjects);
+    getBestSnapTarget(position, excludeObjects = [], targetObject = null) {
+        // Ensure excludeObjects is an array and not null/undefined
+        const safeExcludeObjects = Array.isArray(excludeObjects) ? excludeObjects : [];
+        
+        // Debug: log excluded objects
+        if (safeExcludeObjects.length > 0) {
+            console.log('SNAPMANAGER: Excluding', safeExcludeObjects.length, 'objects from snap detection:', safeExcludeObjects.map(obj => obj.userData?.id || 'unknown'));
+        }
+        
+        const targets = this.detectSnapTargets(position, safeExcludeObjects);
         return targets.length > 0 ? targets[0] : null;
     }
     
@@ -523,11 +531,61 @@ class SnapManager {
     
     // Utility Methods
     getTestableObjects(excludeObjects) {
-        return Array.from(this.geometryManager.objects.values()).filter(obj =>
-            obj.userData.selectable &&
-            !excludeObjects.includes(obj) &&
-            obj.visible
-        );
+        const allObjects = Array.from(this.geometryManager.objects.values());
+        const excludedCount = excludeObjects.length;
+        
+        const testableObjects = allObjects.filter(obj => {
+            // Basic filter conditions
+            if (!obj.userData.selectable || !obj.visible) {
+                return false;
+            }
+            
+            if (excludeObjects.includes(obj)) {
+                console.log('SNAPMANAGER: Excluding selected object from snap targets:', obj.userData.id);
+                return false;
+            }
+            
+            // Exclude parent containers of objects being moved
+            // If any of the excluded objects has this object as a parent container, exclude it
+            const isParentContainer = excludeObjects.some(excludedObj => 
+                this.isParentContainer(obj, excludedObj)
+            );
+            
+            if (isParentContainer) {
+                console.log('SNAPMANAGER: Excluding parent container from snap targets:', obj.userData.id);
+                return false;
+            }
+            
+            // Exclude container-proxy objects whose parent container is being excluded
+            if (obj.userData.isContainerProxy) {
+                const parentContainer = obj.userData.parentContainer;
+                const shouldExcludeProxy = excludeObjects.some(excludedObj => 
+                    this.isParentContainer(parentContainer, excludedObj)
+                );
+                
+                if (shouldExcludeProxy) {
+                    console.log('SNAPMANAGER: Excluding container-proxy from snap targets:', obj.userData.id);
+                    return false;
+                }
+            }
+            
+            return true;
+        });
+        
+        console.log('SNAPMANAGER: Filtered', allObjects.length, 'objects down to', testableObjects.length, 'testable objects (excluded', excludedCount, 'selected objects)');
+        return testableObjects;
+    }
+    
+    // Helper method to check if container is a parent of object (at any level)
+    isParentContainer(container, object) {
+        let current = object;
+        while (current && current.userData.parentContainer) {
+            if (current.userData.parentContainer === container) {
+                return true;
+            }
+            current = current.userData.parentContainer;
+        }
+        return false;
     }
     
     getClosestPointOnEdge(position, edge) {
@@ -570,7 +628,11 @@ class SnapManager {
             localOffset.z = (depth / 2) * Math.sign(worldNormal.z);
         }
         
-        return localOffset.applyMatrix4(object.matrixWorld);
+        // Transform offset as a direction, then add to world position
+        const worldPosition = new THREE.Vector3();
+        object.matrixWorld.decompose(worldPosition, new THREE.Quaternion(), new THREE.Vector3());
+        const transformedOffset = localOffset.transformDirection(object.matrixWorld);
+        return worldPosition.clone().add(transformedOffset);
     }
     
     worldToScreenPosition(worldPosition) {
@@ -752,15 +814,20 @@ class SnapManager {
     }
     
     createFaceGeometry(object) {
+        // Use consistent bounds calculation like other proxy objects
+        let bounds;
+        if (object.isContainer && object.getObjectGeometryBounds) {
+            bounds = object.getObjectGeometryBounds(object);
+        } else {
+            bounds = new THREE.Box3().setFromObject(object);
+        }
+        
+        const size = bounds.getSize(new THREE.Vector3());
+        
         if (object.geometry instanceof THREE.BoxGeometry) {
-            const width = object.userData.width || 2;
-            const height = object.userData.height || 1;
-            const depth = object.userData.depth || 3;
-            return new THREE.BoxGeometry(width, height, depth);
+            return new THREE.BoxGeometry(size.x, size.y, size.z);
         } else if (object.geometry instanceof THREE.PlaneGeometry) {
-            const width = object.userData.width || 2;
-            const height = object.userData.height || 2;
-            return new THREE.PlaneGeometry(width, height);
+            return new THREE.PlaneGeometry(size.x, size.y);
         }
         
         return new THREE.BoxGeometry(1, 1, 1);

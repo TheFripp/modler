@@ -6,11 +6,25 @@ class SelectionManager {
         this.sceneManager = sceneManager;
         this.highlightManager = highlightManager;
         
+        // Initialize PropertyPanelManager for UI handling
+        this.propertyPanelManager = new PropertyPanelManager(this, highlightManager);
+        
         // Selection state
         this.selectedObjects = new Set();
         this.hoveredObject = null;
         this.selectedFace = null;
         this.hoveredFace = null;
+        
+        // Centralized hierarchical selection state
+        this.hierarchicalState = {
+            lastClickTime: 0,
+            lastClickedObject: null,
+            currentDepthMap: new Map(), // objectId -> depth level
+            doubleClickThreshold: 400
+        };
+        
+        // MANDATORY ARCHITECTURE PATTERN: Centralized UI synchronization
+        this.uiSyncCallbacks = new Set();
         
         // Materials
         this.standardMaterial = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
@@ -35,7 +49,7 @@ class SelectionManager {
         
         this.selectedObjects.add(object);
         this.applySelectionVisuals(object);
-        this.updatePropertyPanel();
+        this.propertyPanelManager.updatePropertyPanel();
         
         // Handle container selection
         if (object.isContainer) {
@@ -58,6 +72,10 @@ class SelectionManager {
             this.onSelectionChanged();
         }
         
+        // MANDATORY ARCHITECTURE PATTERN: Notify UI of selection changes
+        this.notifyUISync('selection_added', { object });
+        this.notifyUISync('selection_changed', { selectedObjects: Array.from(this.selectedObjects) });
+        
         console.log('SELECTION: Added object', object.userData.id, 'to selection');
     }
 
@@ -71,7 +89,11 @@ class SelectionManager {
                 object.setSelected(false);
             }
             
-            this.updatePropertyPanel();
+            this.propertyPanelManager.updatePropertyPanel();
+            
+            // MANDATORY ARCHITECTURE PATTERN: Notify UI of selection changes
+            this.notifyUISync('selection_removed', { object });
+            this.notifyUISync('selection_changed', { selectedObjects: Array.from(this.selectedObjects) });
             
             // Notify hierarchy panel
             if (this.onSelectionChanged) {
@@ -99,12 +121,16 @@ class SelectionManager {
         this.selectedObjects.clear();
         this.selectedFace = null;
         this.clearParentContainerHighlights();
-        this.updatePropertyPanel();
+        this.propertyPanelManager.updatePropertyPanel();
         
         // Notify centralized highlight manager about selection changes
         if (this.highlightManager) {
             this.highlightManager.onSelectionChanged(Array.from(this.selectedObjects));
         }
+        
+        // MANDATORY ARCHITECTURE PATTERN: Notify UI of selection changes
+        this.notifyUISync('selection_cleared', {});
+        this.notifyUISync('selection_changed', { selectedObjects: [] });
         
         // Notify hierarchy panel
         if (this.onSelectionChanged) {
@@ -275,228 +301,9 @@ class SelectionManager {
         });
         
         this.clearSelection();
-        this.updatePropertyPanel();
+        this.propertyPanelManager.updatePropertyPanel();
         
         console.log('Deleted', objectsToDelete.length, 'objects');
-    }
-
-    // Update UI
-    updatePropertyPanel() {
-        // This will be called to update the properties panel
-        const selectedCount = this.selectedObjects.size;
-        const firstSelected = this.getFirstSelected();
-        
-        // Update properties panel content
-        const propertiesContainer = document.getElementById('object-properties');
-        if (propertiesContainer) {
-            if (selectedCount === 0) {
-                propertiesContainer.innerHTML = '<p>No objects selected</p>';
-            } else if (selectedCount === 1) {
-                this.showObjectProperties(firstSelected, propertiesContainer);
-            } else {
-                propertiesContainer.innerHTML = `<p>${selectedCount} objects selected</p>`;
-            }
-        }
-    }
-
-    showObjectProperties(object, container) {
-        const userData = object.userData;
-        let html = `<h4>${object.isContainer ? 'Container' : 'Object'} Properties</h4>`;
-        
-        // Type and ID (read-only)
-        html += `<div class="property-row">
-            <span class="property-label">Type:</span>
-            <span class="property-value">${userData.type || 'Unknown'}</span>
-        </div>`;
-        html += `<div class="property-row">
-            <span class="property-label">ID:</span>
-            <span class="property-value">${userData.id || 'N/A'}</span>
-        </div>`;
-        
-        // Container-specific properties
-        if (object.isContainer) {
-            html += this.getContainerPropertiesHTML(object);
-        }
-        
-        // Dimensions (editable)
-        if (userData.width !== undefined) {
-            html += `<div class="property-row">
-                <span class="property-label">Width:</span>
-                <div class="property-input-container">
-                    <input class="property-input" id="prop-width" type="number" step="0.1" value="${userData.width.toFixed(2)}" 
-                           data-object-id="${userData.id}" data-property="width" />
-                </div>
-            </div>`;
-        }
-        if (userData.height !== undefined) {
-            html += `<div class="property-row">
-                <span class="property-label">Height:</span>
-                <div class="property-input-container">
-                    <input class="property-input" id="prop-height" type="number" step="0.1" value="${userData.height.toFixed(2)}" 
-                           data-object-id="${userData.id}" data-property="height" />
-                </div>
-            </div>`;
-        }
-        if (userData.depth !== undefined) {
-            html += `<div class="property-row">
-                <span class="property-label">Depth:</span>
-                <div class="property-input-container">
-                    <input class="property-input" id="prop-depth" type="number" step="0.1" value="${userData.depth.toFixed(2)}" 
-                           data-object-id="${userData.id}" data-property="depth" />
-                </div>
-            </div>`;
-        }
-        if (userData.radius !== undefined) {
-            html += `<div class="property-row">
-                <span class="property-label">Radius:</span>
-                <div class="property-input-container">
-                    <input class="property-input" id="prop-radius" type="number" step="0.1" value="${userData.radius.toFixed(2)}" 
-                           data-object-id="${userData.id}" data-property="radius" />
-                </div>
-            </div>`;
-        }
-        
-        // Position (editable)
-        html += `<div class="property-row">
-            <span class="property-label">Position X:</span>
-            <div class="property-input-container">
-                <input class="property-input" id="prop-x" type="number" step="0.1" value="${object.position.x.toFixed(2)}" 
-                       data-object-id="${userData.id}" data-property="x" />
-            </div>
-        </div>`;
-        html += `<div class="property-row">
-            <span class="property-label">Position Y:</span>
-            <div class="property-input-container">
-                <input class="property-input" id="prop-y" type="number" step="0.1" value="${object.position.y.toFixed(2)}" 
-                       data-object-id="${userData.id}" data-property="y" />
-            </div>
-        </div>`;
-        html += `<div class="property-row">
-            <span class="property-label">Position Z:</span>
-            <div class="property-input-container">
-                <input class="property-input" id="prop-z" type="number" step="0.1" value="${object.position.z.toFixed(2)}" 
-                       data-object-id="${userData.id}" data-property="z" />
-            </div>
-        </div>`;
-        
-        container.innerHTML = html;
-        
-        // Add event listeners for the property inputs
-        this.setupPropertyInputListeners(object);
-    }
-
-    getContainerPropertiesHTML(container) {
-        let html = `<div class="property-group">
-            <h4>Layout Options</h4>`;
-        
-        // Distribution Mode
-        html += `<div class="property-row">
-            <span class="property-label">Distribution:</span>
-            <select class="property-select" id="distribution-mode" data-container-id="${container.userData.id}">
-                <option value="none" ${container.userData.distributionMode === 'none' ? 'selected' : ''}>None</option>
-                <option value="even" ${container.userData.distributionMode === 'even' ? 'selected' : ''}>Even Spacing</option>
-                <option value="center" ${container.userData.distributionMode === 'center' ? 'selected' : ''}>Center</option>
-            </select>
-        </div>`;
-        
-        // Alignment Mode
-        html += `<div class="property-row">
-            <span class="property-label">Alignment:</span>
-            <select class="property-select" id="alignment-mode" data-container-id="${container.userData.id}">
-                <option value="none" ${container.userData.alignmentMode === 'none' ? 'selected' : ''}>None</option>
-                <option value="left" ${container.userData.alignmentMode === 'left' ? 'selected' : ''}>Left</option>
-                <option value="center" ${container.userData.alignmentMode === 'center' ? 'selected' : ''}>Center</option>
-                <option value="right" ${container.userData.alignmentMode === 'right' ? 'selected' : ''}>Right</option>
-                <option value="top" ${container.userData.alignmentMode === 'top' ? 'selected' : ''}>Top</option>
-                <option value="bottom" ${container.userData.alignmentMode === 'bottom' ? 'selected' : ''}>Bottom</option>
-            </select>
-        </div>`;
-        
-        // Fill Mode Checkboxes
-        html += `<div class="property-row">
-            <span class="property-label">Scale to Fill:</span>
-            <div class="fill-mode-checkboxes">
-                <label class="fill-checkbox">
-                    <input type="checkbox" id="fill-x" data-container-id="${container.userData.id}" data-axis="x" 
-                           ${container.userData.fillMode.x ? 'checked' : ''}> X
-                </label>
-                <label class="fill-checkbox">
-                    <input type="checkbox" id="fill-y" data-container-id="${container.userData.id}" data-axis="y" 
-                           ${container.userData.fillMode.y ? 'checked' : ''}> Y
-                </label>
-                <label class="fill-checkbox">
-                    <input type="checkbox" id="fill-z" data-container-id="${container.userData.id}" data-axis="z" 
-                           ${container.userData.fillMode.z ? 'checked' : ''}> Z
-                </label>
-            </div>
-        </div>`;
-        
-        html += `</div>`;
-        return html;
-    }
-
-    setupPropertyInputListeners(object) {
-        const propertyInputs = document.querySelectorAll('.property-input[data-object-id="' + object.userData.id + '"]');
-        
-        propertyInputs.forEach(input => {
-            // Handle Enter key to apply changes
-            input.addEventListener('keydown', (event) => {
-                if (event.key === 'Enter') {
-                    event.preventDefault();
-                    this.applyPropertyChange(object, input);
-                    input.blur(); // Remove focus
-                } else if (event.key === 'Tab') {
-                    // Tab navigation will be handled by default browser behavior
-                    // We can enhance this later
-                }
-            });
-            
-            // Handle blur (when input loses focus)
-            input.addEventListener('blur', () => {
-                this.applyPropertyChange(object, input);
-            });
-            
-            // Real-time validation (optional)
-            input.addEventListener('input', () => {
-                this.validatePropertyInput(input);
-            });
-        });
-        
-        // Container-specific controls
-        if (object.isContainer) {
-            this.setupContainerControlListeners(object);
-        }
-    }
-
-    setupContainerControlListeners(container) {
-        // Distribution mode select
-        const distributionSelect = document.getElementById('distribution-mode');
-        if (distributionSelect) {
-            distributionSelect.addEventListener('change', (event) => {
-                container.setDistributionMode(event.target.value);
-                console.log(`Set distribution mode to ${event.target.value} for container ${container.userData.id}`);
-            });
-        }
-        
-        // Alignment mode select
-        const alignmentSelect = document.getElementById('alignment-mode');
-        if (alignmentSelect) {
-            alignmentSelect.addEventListener('change', (event) => {
-                container.setAlignmentMode(event.target.value);
-                console.log(`Set alignment mode to ${event.target.value} for container ${container.userData.id}`);
-            });
-        }
-        
-        // Fill mode checkboxes
-        const fillCheckboxes = document.querySelectorAll(`input[data-container-id="${container.userData.id}"][data-axis]`);
-        fillCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', (event) => {
-                const axis = event.target.dataset.axis;
-                const enabled = event.target.checked;
-                container.setFillMode(axis, enabled);
-                console.log(`Set fill mode ${axis} to ${enabled} for container ${container.userData.id}`);
-            });
-        });
     }
 
     applyPropertyChange(object, input) {
@@ -508,15 +315,18 @@ class SelectionManager {
             return;
         }
         
-        console.log(`Updating ${property} from ${this.getObjectProperty(object, property)} to ${newValue}`);
+        // console.log(`Updating ${property} from ${this.getObjectProperty(object, property)} to ${newValue}`);
         
         // Update the object based on property type
         if (property === 'x') {
             object.position.x = newValue;
+            this.handleObjectPositionChange(object);
         } else if (property === 'y') {
             object.position.y = newValue;
+            this.handleObjectPositionChange(object);
         } else if (property === 'z') {
             object.position.z = newValue;
+            this.handleObjectPositionChange(object);
         } else if (property === 'width' && object.userData.width !== undefined) {
             this.updateObjectDimension(object, 'width', newValue);
         } else if (property === 'height' && object.userData.height !== undefined) {
@@ -531,7 +341,7 @@ class SelectionManager {
         this.highlightManager.updateSelectionHighlights();
         
         // Refresh properties panel to show updated values
-        this.refreshProperties();
+        this.propertyPanelManager.refreshProperties();
     }
 
     getObjectProperty(object, property) {
@@ -545,35 +355,178 @@ class SelectionManager {
         // Update userData
         object.userData[dimension] = newValue;
         
-        // Update the actual geometry - this would need to be more sophisticated
-        // For now, just log the change
-        console.log(`Object ${object.userData.id} ${dimension} updated to ${newValue}`);
+        // console.log(`Object ${object.userData.id} ${dimension} updated to ${newValue}`);
         
-        // TODO: Implement geometry updating based on the object type
-        // This would require calling the appropriate geometry manager methods
-    }
-
-    validatePropertyInput(input) {
-        const value = parseFloat(input.value);
-        if (isNaN(value)) {
-            input.style.borderColor = '#ff0000';
-            input.style.backgroundColor = '#ffeeee';
+        // Update the actual geometry based on object type
+        if (object.isContainer) {
+            // Handle container resizing
+            if (dimension === 'width' || dimension === 'height' || dimension === 'depth') {
+                object.resize(
+                    object.userData.width || 1,
+                    object.userData.height || 1,
+                    object.userData.depth || 1
+                );
+                
+                // Check if container has auto-layout enabled, if so use that system
+                if (window.modlerApp && window.modlerApp.autoLayoutManager && object.userData.layout && object.userData.layout.enabled !== false) {
+                    // Use auto layout system for modern containers
+                    window.modlerApp.autoLayoutManager.onContainerChildrenChanged(object);
+                } else {
+                    // Use legacy container properties for basic containers
+                    object.applyContainerProperties();
+                }
+                
+                // Update highlights for container and all child objects after resize
+                this.updateContainerAndChildHighlights(object);
+            }
         } else {
-            input.style.borderColor = '';
-            input.style.backgroundColor = '';
+            // Handle regular object geometry updating
+            this.updateObjectGeometry(object);
+        }
+        
+        // Notify parent container if this object is inside one
+        if (object.userData.parentContainer && object.userData.parentContainer.onChildChanged) {
+            object.userData.parentContainer.onChildChanged();
         }
     }
+    
+    updateObjectGeometry(object) {
+        // Update geometry for regular objects (not containers)
+        if (object.geometry instanceof THREE.BoxGeometry) {
+            const width = object.userData.width || 1;
+            const height = object.userData.height || 1; 
+            const depth = object.userData.depth || 1;
+            
+            // Create new geometry with updated dimensions
+            const newGeometry = new THREE.BoxGeometry(width, height, depth);
+            
+            // Dispose old geometry and assign new one
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+            
+        } else if (object.geometry instanceof THREE.CylinderGeometry) {
+            const radius = object.userData.radius || 0.5;
+            const height = object.userData.height || 1;
+            
+            // Create new cylinder geometry
+            const newGeometry = new THREE.CylinderGeometry(radius, radius, height, 32);
+            
+            // Dispose old geometry and assign new one
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+            
+        } else if (object.geometry instanceof THREE.SphereGeometry) {
+            const radius = object.userData.radius || 0.5;
+            
+            // Create new sphere geometry
+            const newGeometry = new THREE.SphereGeometry(radius, 32, 16);
+            
+            // Dispose old geometry and assign new one
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+        }
+        
+        // console.log(`Updated geometry for object ${object.userData.id}`);
+    }
+    
+    handleObjectPositionChange(object) {
+        // Handle position changes for objects and containers
+        if (object.isContainer) {
+            // When a container moves, update its bounding box
+            object.updateBoundingBox();
+            
+            // Check if container has auto-layout enabled, if so use that system
+            if (window.modlerApp && window.modlerApp.autoLayoutManager && object.userData.layout && object.userData.layout.enabled !== false) {
+                // Use auto layout system for modern containers
+                window.modlerApp.autoLayoutManager.onContainerChildrenChanged(object);
+            } else {
+                // Use legacy container properties for basic containers
+                object.applyContainerProperties();
+            }
+            
+            // Update highlights for container and all child objects
+            this.updateContainerAndChildHighlights(object);
+        } else {
+            // For regular objects, notify parent container if they have one
+            if (object.userData.parentContainer && object.userData.parentContainer.onChildChanged) {
+                object.userData.parentContainer.onChildChanged();
+            }
+            
+            // Update highlights for the moved object
+            if (this.highlightManager) {
+                this.highlightManager.updateSelectionHighlights();
+            }
+        }
+    }
+    
+    updateContainerAndChildHighlights(container) {
+        if (!this.highlightManager) return;
+        
+        // Clear all face highlights first - they may be positioned incorrectly after container move
+        this.highlightManager.clearFaceHoverHighlights();
+        
+        // Update highlights for all selected objects in the container hierarchy
+        this.selectedObjects.forEach(selectedObject => {
+            // Check if this selected object is the container or a child of the moved container
+            if (selectedObject === container || this.isChildOfContainer(selectedObject, container)) {
+                // Clear any selected face highlights for this object
+                this.highlightManager.clearSelectedFaceHighlight(selectedObject);
+                
+                // Force update edge highlights by recreating them
+                this.highlightManager.updateObjectEdgeHighlight(selectedObject);
+            }
+        });
+        
+        // Also check if we have a selected face that belongs to an object in this container
+        if (this.selectedFace && this.selectedFace.object) {
+            if (container === this.selectedFace.object || this.isChildOfContainer(this.selectedFace.object, container)) {
+                // Clear the selected face highlight since the object moved
+                this.highlightManager.clearSelectedFaceHighlight(this.selectedFace.object);
+                this.selectedFace = null; // Reset selected face
+            }
+        }
+        
+        // Update all selection highlights
+        this.highlightManager.updateSelectionHighlights();
+        
+        console.log('Updated highlights for container and children after move/resize');
+    }
+    
+    isChildOfContainer(object, container) {
+        // Check if object is a descendant of the container
+        let current = object;
+        while (current && current.userData.parentContainer) {
+            current = current.userData.parentContainer;
+            if (current === container) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    // Hide bounding box helpers for all selected containers during operations
+    hideContainerBoundingBoxes() {
+        this.selectedObjects.forEach(object => {
+            if (object.isContainer && object.hideBoundingBoxHelper) {
+                object.hideBoundingBoxHelper();
+            }
+        });
+    }
+    
+    // Show bounding box helpers for all selected containers after operations
+    showContainerBoundingBoxes() {
+        this.selectedObjects.forEach(object => {
+            if (object.isContainer && object.showBoundingBoxHelper) {
+                object.showBoundingBoxHelper();
+            }
+        });
+    }
+
 
     // Refresh the properties panel for the currently selected object
     refreshProperties() {
-        const selectedCount = this.getSelectionCount();
-        const firstSelected = this.getFirstSelected();
-        
-        const propertiesContainer = document.getElementById('object-properties');
-        if (propertiesContainer && selectedCount === 1 && firstSelected) {
-            // Update the properties panel with current object values
-            this.showObjectProperties(firstSelected, propertiesContainer);
-        }
+        // Delegate to PropertyPanelManager
+        this.propertyPanelManager.refreshProperties();
     }
 
     // Force refresh of selection highlights (for settings changes)
@@ -624,6 +577,219 @@ class SelectionManager {
         if (this.standardMaterial) this.standardMaterial.dispose();
         if (this.selectionMaterial) this.selectionMaterial.dispose();
     }
+    
+    // Hierarchical Selection Methods (used by all tools)
+    handleHierarchicalClick(event, intersectionData, toolName = 'unknown') {
+        if (!intersectionData || !intersectionData.object.userData.selectable) {
+            console.log(`SELECTION: No selectable object found for tool: ${toolName}`);
+            return null; // No object to select
+        }
+        
+        let clickedObject = intersectionData.object;
+        
+        // If clicking on container proxy, get the actual container
+        if (intersectionData.object.userData.isContainerProxy) {
+            clickedObject = intersectionData.object.userData.parentContainer;
+            console.log(`SELECTION: Clicked on container proxy for container: ${clickedObject.userData.id}`);
+        }
+        
+        // Handle shift-click for multi-select (skips hierarchical logic)
+        if (event.shiftKey) {
+            console.log(`SELECTION: Shift-click multi-select for tool: ${toolName}`);
+            this.toggleSelection(clickedObject);
+            return clickedObject;
+        }
+        
+        // For tools other than select, use hierarchical logic but without double-click depth tracking
+        // All tools start by selecting the outermost container on first click
+        const targetForSelection = this.getOutermostContainer(clickedObject);
+        
+        console.log(`SELECTION: Hierarchical selection for tool ${toolName} - selecting outermost container:`, targetForSelection.userData.id);
+        this.selectOnly(targetForSelection);
+        
+        return targetForSelection;
+    }
+    
+    handleHierarchicalDoubleClick(event, intersectionData, currentDepthMap) {
+        if (!intersectionData || !intersectionData.object.userData.selectable) {
+            return null;
+        }
+        
+        let clickedObject = intersectionData.object;
+        
+        // If clicking on container proxy, get the actual container
+        if (intersectionData.object.userData.isContainerProxy) {
+            clickedObject = intersectionData.object.userData.parentContainer;
+        }
+        
+        // Find the outermost container for this object
+        const outermostContainer = this.getOutermostContainer(clickedObject);
+        const currentDepth = currentDepthMap.get(outermostContainer.userData.id) || 0;
+        
+        console.log('SELECTION: Double-click - current selection depth for hierarchy:', currentDepth);
+        
+        // Go one level deeper
+        const targetForSelection = this.getObjectAtDepth(clickedObject, currentDepth + 1);
+        
+        if (targetForSelection && targetForSelection !== outermostContainer) {
+            console.log('SELECTION: Double-click - going deeper to select:', targetForSelection.userData.id);
+            
+            // Update depth tracking
+            currentDepthMap.set(outermostContainer.userData.id, currentDepth + 1);
+            
+            // Select the deeper object
+            this.selectOnly(targetForSelection);
+            return targetForSelection;
+        } else {
+            console.log('SELECTION: Double-click - already at deepest level or no deeper level available');
+            return null;
+        }
+    }
+    
+    getOutermostContainer(object) {
+        // Find the topmost parent container (or the object itself if no container)
+        let current = object;
+        while (current.userData.parentContainer) {
+            current = current.userData.parentContainer;
+        }
+        return current;
+    }
+    
+    getObjectAtDepth(clickedObject, targetDepth) {
+        // Get the outermost container first
+        const outermostContainer = this.getOutermostContainer(clickedObject);
+        
+        // Build hierarchy path starting from outermost container
+        const hierarchyPath = [outermostContainer];
+        
+        // If we're at depth 0, return the container
+        if (targetDepth === 0) {
+            return outermostContainer;
+        }
+        
+        // If the outermost is a container with children, add children to path
+        if (outermostContainer.isContainer && outermostContainer.childObjects && outermostContainer.childObjects.size > 0) {
+            // Add children to hierarchy path
+            const children = Array.from(outermostContainer.childObjects);
+            // Sort children by some consistent order (e.g., by id)
+            children.sort((a, b) => a.userData.id.toString().localeCompare(b.userData.id.toString()));
+            hierarchyPath.push(...children);
+        }
+        
+        console.log('SELECTION: Hierarchy path:', hierarchyPath.map(obj => obj.userData.id));
+        console.log('SELECTION: Target depth:', targetDepth, 'Path length:', hierarchyPath.length);
+        
+        // Return object at target depth (0 = outermost container, 1+ = children)
+        if (targetDepth < hierarchyPath.length) {
+            return hierarchyPath[targetDepth];
+        }
+        
+        // If target depth exceeds hierarchy, return the deepest object available
+        return hierarchyPath[hierarchyPath.length - 1];
+    }
+    
+    // Centralized Hierarchical Selection Handler
+    handleToolClick(event, intersectionData, toolName) {
+        if (!intersectionData || !intersectionData.object.userData.selectable) {
+            return null;
+        }
+        
+        let clickedObject = intersectionData.object;
+        
+        // Handle container geometry (not proxy - that's obsolete)
+        if (intersectionData.object.userData.isContainerGeometry) {
+            clickedObject = intersectionData.object.userData.parentContainer;
+        }
+        
+        // Handle shift-click for multi-select (skips hierarchical logic)
+        if (event.shiftKey) {
+            this.toggleSelection(clickedObject);
+            return clickedObject;
+        }
+        
+        const currentTime = Date.now();
+        const isDoubleClick = this.detectDoubleClick(currentTime, clickedObject);
+        
+        if (isDoubleClick) {
+            // Double-click: go deeper in hierarchy
+            const result = this.handleHierarchicalDoubleClick(event, { object: clickedObject }, this.hierarchicalState.currentDepthMap);
+            return result;
+        } else {
+            // Single click: reset depth and select
+            const result = this.handleHierarchicalClick(event, { object: clickedObject }, toolName);
+            if (result) {
+                this.hierarchicalState.currentDepthMap.clear();
+                this.hierarchicalState.currentDepthMap.set(result.userData.id, 0);
+            }
+            return result;
+        }
+    }
+    
+    detectDoubleClick(currentTime, clickedObject) {
+        const timeDiff = currentTime - this.hierarchicalState.lastClickTime;
+        const isSameObject = this.hierarchicalState.lastClickedObject === clickedObject;
+        const isDoubleClick = (timeDiff < this.hierarchicalState.doubleClickThreshold) && isSameObject;
+        
+        // Update tracking state
+        this.hierarchicalState.lastClickTime = currentTime;
+        this.hierarchicalState.lastClickedObject = clickedObject;
+        
+        return isDoubleClick;
+    }
+    
+    // Reset hierarchical state when external selection changes occur
+    resetHierarchicalState() {
+        this.hierarchicalState.currentDepthMap.clear();
+        this.hierarchicalState.lastClickedObject = null;
+        this.hierarchicalState.lastClickTime = 0;
+    }
+    
+    
+    updateObjectGeometry(object) {
+        if (!object.geometry) return;
+        
+        // Update geometry based on object type
+        if (object.geometry instanceof THREE.BoxGeometry) {
+            const newGeometry = new THREE.BoxGeometry(
+                object.userData.width || 1,
+                object.userData.height || 1,
+                object.userData.depth || 1
+            );
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+        } else if (object.geometry instanceof THREE.CylinderGeometry && object.userData.radius) {
+            const newGeometry = new THREE.CylinderGeometry(
+                object.userData.radius,
+                object.userData.radius,
+                object.userData.height || 1
+            );
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+        }
+        
+        console.log(`LAYOUT: Updated geometry for object ${object.userData.id}`);
+    }
+    
+    // MANDATORY ARCHITECTURE PATTERN: Centralized UI synchronization system
+    registerUISync(callback) {
+        this.uiSyncCallbacks.add(callback);
+        console.log('UI sync callback registered with SelectionManager');
+    }
+    
+    unregisterUISync(callback) {
+        this.uiSyncCallbacks.delete(callback);
+    }
+    
+    notifyUISync(changeType, data) {
+        this.uiSyncCallbacks.forEach(callback => {
+            try {
+                callback(changeType, data);
+            } catch (error) {
+                console.error('Selection UI sync callback error:', error);
+            }
+        });
+    }
+    
 }
 
 // Export for module use

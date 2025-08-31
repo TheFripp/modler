@@ -19,6 +19,9 @@ class SceneManager {
         // Scene graph management
         this.hierarchyPanel = null;
         this.sceneEventListeners = [];
+        
+        // MANDATORY ARCHITECTURE PATTERN: Centralized UI synchronization
+        this.uiSyncCallbacks = new Set(); // Registered UI update callbacks
     }
 
     init(canvas) {
@@ -112,17 +115,20 @@ class SceneManager {
         }
         
         const floorGeometry = new THREE.PlaneGeometry(this.sceneSettings.gridSize * 2, this.sceneSettings.gridSize * 2);
-        const floorMaterial = new THREE.MeshLambertMaterial({
+        const floorMaterial = new THREE.MeshBasicMaterial({
             color: 0x2a2a2a,
             transparent: true,
-            opacity: 0.05,
-            side: THREE.DoubleSide
+            opacity: 0.02, // Much more transparent
+            side: THREE.DoubleSide,
+            depthWrite: false, // Don't write to depth buffer - prevents occlusion
+            depthTest: false   // Don't test depth - always render behind objects
         });
         this.floorPlane = new THREE.Mesh(floorGeometry, floorMaterial);
         this.floorPlane.rotation.x = -Math.PI / 2;
         this.floorPlane.position.y = -0.01;
         this.floorPlane.receiveShadow = false; // Don't receive shadows - objects should be visible under floor
         this.floorPlane.castShadow = false; // Ensure floor doesn't cast shadows
+        this.floorPlane.renderOrder = -1; // Render behind other objects
         this.floorPlane.name = 'floor';
         this.floorPlane.userData = { isFloor: true, selectable: false };
         this.scene.add(this.floorPlane);
@@ -149,7 +155,9 @@ class SceneManager {
 
     enableShadows(enabled) {
         this.lights.forEach(light => {
-            if (light.castShadow !== undefined) {
+            // Only set castShadow on lights that can actually cast shadows
+            // AmbientLight cannot cast shadows
+            if (light.isDirectionalLight || light.isSpotLight || light.isPointLight) {
                 light.castShadow = enabled;
             }
         });
@@ -184,6 +192,14 @@ class SceneManager {
     // Scene Graph Management
     setHierarchyPanel(hierarchyPanel) {
         this.hierarchyPanel = hierarchyPanel;
+    }
+    
+    setHighlightManager(highlightManager) {
+        this.highlightManager = highlightManager;
+    }
+    
+    setAutoLayoutManager(autoLayoutManager) {
+        this.autoLayoutManager = autoLayoutManager;
     }
     
     addObject(object) {
@@ -243,22 +259,57 @@ class SceneManager {
         return objects;
     }
     
-    // Event system for hierarchy updates
+    // MANDATORY ARCHITECTURE PATTERN: Centralized UI synchronization system
+    registerUISync(callback) {
+        this.uiSyncCallbacks.add(callback);
+        console.log('UI sync callback registered with SceneManager');
+    }
+    
+    unregisterUISync(callback) {
+        this.uiSyncCallbacks.delete(callback);
+    }
+    
+    notifyUISync(changeType, data) {
+        this.uiSyncCallbacks.forEach(callback => {
+            try {
+                callback(changeType, data);
+            } catch (error) {
+                console.error('UI sync callback error:', error);
+            }
+        });
+    }
+    
+    // Updated notification methods using centralized system
     notifyObjectAdded(object) {
+        this.notifyUISync('object_added', { object });
+        
+        // Backward compatibility with legacy hierarchy panel
         if (this.hierarchyPanel) {
             this.hierarchyPanel.onObjectAdded(object);
         }
     }
     
     notifyObjectRemoved(object) {
+        this.notifyUISync('object_removed', { object });
+        
+        // Backward compatibility with legacy hierarchy panel
         if (this.hierarchyPanel) {
             this.hierarchyPanel.onObjectRemoved(object);
         }
     }
     
     notifyObjectChanged(object) {
+        this.notifyUISync('object_modified', { object });
+        
+        // Backward compatibility with legacy hierarchy panel
         if (this.hierarchyPanel) {
             this.hierarchyPanel.onObjectChanged(object);
+        }
+        if (this.highlightManager) {
+            this.highlightManager.onObjectChanged(object);
+        }
+        if (this.autoLayoutManager) {
+            this.autoLayoutManager.onObjectChanged(object);
         }
     }
 

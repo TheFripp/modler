@@ -49,7 +49,8 @@ class ToolManager {
             this.materialManager,
             this.stateManager,
             this.objectManager,
-            this.configManager
+            this.configManager,
+            this.highlightManager
         ));
         this.tools.set('push', new PushPullTool(
             this.sceneManager, 
@@ -216,6 +217,8 @@ class ToolManager {
         
         // Clear all temporary highlights when switching tools using centralized system
         if (this.highlightManager) {
+            console.log('TOOLMANAGER: highlightManager exists, type:', typeof this.highlightManager);
+            console.log('TOOLMANAGER: clearTemporaryHighlights method exists:', typeof this.highlightManager.clearTemporaryHighlights);
             this.highlightManager.clearTemporaryHighlights();
         } else if (this.selectionManager && this.selectionManager.highlightSystem) {
             // Fallback for legacy system
@@ -250,6 +253,10 @@ class ToolManager {
 
     getActiveToolName() {
         return this.activeTool ? this.activeTool.name : null;
+    }
+    
+    getTool(toolName) {
+        return this.tools.get(toolName);
     }
 
     getPreviousTool() {

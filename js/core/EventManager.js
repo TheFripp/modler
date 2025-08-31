@@ -7,6 +7,8 @@ class EventManager {
         this.camera = camera;
         this.scene = scene;
         this.raycaster = new THREE.Raycaster();
+        // Set precise line threshold for better container selection
+        this.raycaster.params.Line.threshold = 0.1;
         this.mouse = new THREE.Vector2();
         
         // Event state

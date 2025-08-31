@@ -2,18 +2,19 @@
  * Hierarchy Panel - Tree view for organizing and managing scene objects
  */
 class HierarchyPanel {
-    constructor(sceneManager, selectionManager, stateManager = null, objectManager = null, materialManager = null) {
+    constructor(sceneManager, selectionManager, stateManager = null, objectManager = null, materialManager = null, autoLayoutManager = null) {
         this.sceneManager = sceneManager;
         this.selectionManager = selectionManager;
         this.stateManager = stateManager;
         this.objectManager = objectManager;
         this.materialManager = materialManager;
+        this.autoLayoutManager = autoLayoutManager;
         
         // Panel state - use centralized state if available
         if (this.stateManager) {
             // Subscribe to state changes
             this.stateManager.subscribe('hierarchy.expanded', (expanded) => {
-                this.expandedItems = expanded;
+                this.expandedItems = expanded instanceof Set ? expanded : new Set(expanded || []);
                 this.buildTree();
             });
             
@@ -29,8 +30,9 @@ class HierarchyPanel {
                 this.updateVisibilityUI();
             });
             
-            // Use centralized expanded state
-            this.expandedItems = this.stateManager.get('hierarchy.expanded') || new Set();
+            // Use centralized expanded state - ensure it's a Set
+            const savedExpanded = this.stateManager.get('hierarchy.expanded');
+            this.expandedItems = savedExpanded instanceof Set ? savedExpanded : new Set(savedExpanded || []);
         } else {
             // Fallback to local state
             this.expandedItems = new Set();
@@ -40,12 +42,27 @@ class HierarchyPanel {
         this.dropTarget = null;
         this.dropPosition = null; // 'before', 'after', 'inside'
         
+        // Container creation state
+        this.creatingContainer = false;
+        this.nextContainerNumber = 1;
+        
+        // Tree building state
+        this.buildTreePending = false;
+        
         // Create panel DOM structure
         this.createPanel();
         this.setupEventListeners();
         
-        // Update on selection changes
-        this.selectionManager.onSelectionChanged = () => this.updateSelection();
+        // MANDATORY ARCHITECTURE PATTERN: Register for centralized UI synchronization
+        if (this.sceneManager && this.sceneManager.registerUISync) {
+            this.sceneManager.registerUISync(this.handleSceneChange.bind(this));
+        }
+        
+        if (this.selectionManager && this.selectionManager.registerUISync) {
+            this.selectionManager.registerUISync(this.handleSelectionChange.bind(this));
+        }
+        
+        // Update on selection changes (callback will be set by main application)
         
         // Build initial tree
         this.buildTree();
@@ -139,12 +156,20 @@ class HierarchyPanel {
     
     // Tree Building
     buildTree() {
-        console.log('HIERARCHY: Building tree...');
+        // Throttle rapid buildTree calls to prevent duplicates
+        if (this.buildTreePending) {
+            console.log('HIERARCHY: buildTree() already pending, skipping');
+            return;
+        }
+        
+        this.buildTreePending = true;
+        
+        console.log('HIERARCHY: buildTree() called - clearing existing tree');
         this.treeContainer.innerHTML = '';
         
         // Get all root-level objects (objects without containers as parents)
         const rootObjects = this.getRootObjects();
-        console.log('HIERARCHY: Root objects for tree:', rootObjects.map(o => `${o.userData.id}(${o.isContainer ? 'container' : 'object'})`));
+        console.log('HIERARCHY: Found', rootObjects.length, 'root objects:', rootObjects.map(obj => obj.userData.id));
         
         rootObjects.forEach(object => {
             this.addObjectAndChildrenToTree(object, 0);
@@ -157,14 +182,22 @@ class HierarchyPanel {
             this.treeContainer.appendChild(emptyMessage);
         }
         
-        console.log('HIERARCHY: Tree building complete');
-        
         // Update selection highlighting after rebuilding tree
         this.updateSelection();
+        
+        // Clear pending flag
+        this.buildTreePending = false;
     }
     
     addObjectAndChildrenToTree(object, depth) {
         console.log(`HIERARCHY: Adding object ${object.userData.id} at depth ${depth}, isContainer: ${object.isContainer}`);
+        
+        // Check if item already exists in tree (prevent duplicates)
+        const existingItem = this.treeContainer.querySelector(`[data-object-id="${object.userData.id}"]`);
+        if (existingItem) {
+            console.warn(`HIERARCHY: Item ${object.userData.id} already exists in tree, skipping duplicate`);
+            return;
+        }
         
         // Create and add the main item
         const item = this.createTreeItem(object, depth);
@@ -248,15 +281,18 @@ class HierarchyPanel {
     }
     
     getRootObjects() {
-        // Use centralized ObjectManager if available
+        // Try centralized ObjectManager if available
         if (this.objectManager && this.stateManager) {
             const rootObjectIds = this.stateManager.get('hierarchy.rootObjects') || new Set();
             const layerOrder = this.stateManager.get('hierarchy.layerOrder') || [];
             
+            // Ensure rootObjectIds is a Set
+            const rootObjectIdsSet = rootObjectIds instanceof Set ? rootObjectIds : new Set(rootObjectIds);
+            
             // Get objects in layer order
             const rootObjects = [];
             layerOrder.forEach(id => {
-                if (rootObjectIds.has(id)) {
+                if (rootObjectIdsSet.has(id)) {
                     const object = this.objectManager.getObject(id);
                     if (object) {
                         rootObjects.push(object);
@@ -265,37 +301,78 @@ class HierarchyPanel {
             });
             
             console.log('HIERARCHY: Using centralized object management, found', rootObjects.length, 'root objects');
-            return rootObjects;
+            
+            // If centralized approach found objects, return them
+            if (rootObjects.length > 0) {
+                return rootObjects;
+            }
+            
+            // If no objects found in centralized state, fall back to scene traversal
+            console.log('HIERARCHY: No objects in centralized state, falling back to scene traversal');
         }
         
         // Fallback to legacy scene traversal
         const rootObjects = [];
         
-        console.log('HIERARCHY: Getting root objects from scene. Scene children count:', this.sceneManager.scene.children.length);
-        
         // Get direct children of the scene that are selectable
-        this.sceneManager.scene.children.forEach((child) => {
-            console.log(`HIERARCHY: Checking scene child:`, child.userData ? child.userData.id : 'no-id', 'type:', child.type, 'isContainer:', child.isContainer);
+        this.sceneManager.scene.children.forEach((child, index) => {
             
             // Skip camera, lights, helpers, grids, floor
             if (child.isCamera || child.isLight || 
                 child.userData?.isHelper || child.userData?.isGrid || 
                 child.userData?.isAxes || child.userData?.isFloor) {
-                console.log(`HIERARCHY: Skipping system object:`, child.userData?.id || child.type);
                 return;
             }
             
             // Include selectable objects and containers, but exclude container proxies
-            if (child.userData && child.userData.selectable && !child.userData.isContainerProxy) {
-                console.log(`HIERARCHY: Adding root object:`, child.userData.id, 'isContainer:', child.isContainer);
+            if (child.userData && child.userData.selectable && 
+                !child.userData.isContainerProxy && 
+                child.userData.type !== 'container-proxy') {
                 rootObjects.push(child);
             }
         });
         
-        console.log('HIERARCHY: Found', rootObjects.length, 'root objects');
+        // Deduplicate objects by ID to prevent duplicates in tree
+        const uniqueObjects = [];
+        const seenIds = new Set();
+        
+        rootObjects.forEach(object => {
+            const id = object.userData.id;
+            if (!seenIds.has(id)) {
+                seenIds.add(id);
+                uniqueObjects.push(object);
+            } else {
+                console.warn('HIERARCHY: Detected duplicate object:', id);
+            }
+        });
+        
+        if (rootObjects.length !== uniqueObjects.length) {
+            console.warn('HIERARCHY: Removed', rootObjects.length - uniqueObjects.length, 'duplicate objects');
+        }
+        
+        // Register found objects with centralized systems for future use
+        if (uniqueObjects.length > 0) {
+            // Register with ObjectManager
+            if (this.objectManager) {
+                uniqueObjects.forEach(object => {
+                    if (!this.objectManager.getObject(object.userData.id)) {
+                        this.objectManager.registerObject(object);
+                    }
+                });
+            }
+            
+            // Register with StateManager hierarchy
+            if (this.stateManager) {
+                const rootObjectIds = new Set(uniqueObjects.map(obj => obj.userData.id));
+                const layerOrder = uniqueObjects.map(obj => obj.userData.id);
+                
+                this.stateManager.set('hierarchy.rootObjects', rootObjectIds);
+                this.stateManager.set('hierarchy.layerOrder', layerOrder);
+            }
+        }
         
         // Don't sort root objects - maintain creation/user-defined order for drag-and-drop reordering
-        return rootObjects;
+        return uniqueObjects;
         
         // return rootObjects.sort((a, b) => {
         //     // Containers first, then by name
@@ -494,14 +571,25 @@ class HierarchyPanel {
     
     // Container Management
     createContainerFromSelection() {
+        // Prevent rapid multiple calls
+        if (this.creatingContainer) {
+            console.log('HIERARCHY: Container creation already in progress, ignoring');
+            return;
+        }
+        this.creatingContainer = true;
+        
         const selectedObjects = this.selectionManager.getSelectedObjects();
         
-        // Create new container using centralized systems
+        // Create new container using centralized systems with proper naming
+        const containerName = `Container ${this.nextContainerNumber.toString().padStart(2, '0')}`;
+        this.nextContainerNumber++;
+        
         const container = new Container(
-            `Group ${Date.now()}`,
+            containerName,
             this.objectManager,
             this.materialManager,
-            this.sceneManager
+            this.sceneManager,
+            this.autoLayoutManager
         );
         
         // Add container to scene
@@ -538,6 +626,11 @@ class HierarchyPanel {
         
         // Refresh tree
         this.buildTree();
+        
+        // Clear the creation flag after a short delay
+        setTimeout(() => {
+            this.creatingContainer = false;
+        }, 500);
     }
     
     // Drag and Drop
@@ -697,7 +790,14 @@ class HierarchyPanel {
         this.clearParentContainerHighlight();
         this.draggedItem = null;
         
-        console.log('HIERARCHY: Rebuilding tree after drop');
+        // Debug: Check scene state after drag operation
+        console.log('HIERARCHY: Scene objects after drag operation:');
+        this.sceneManager.scene.children.forEach(child => {
+            if (child.userData && child.userData.selectable) {
+                console.log(`  - ${child.userData.id} (${child.userData.type}) isContainer:${child.isContainer} children:${child.childObjects ? child.childObjects.size : 0}`);
+            }
+        });
+        
         this.buildTree();
     }
 
@@ -767,6 +867,9 @@ class HierarchyPanel {
         const draggedParent = draggedObject.userData.parentContainer;
         const targetParent = targetObject.userData.parentContainer;
         
+        console.log(`HIERARCHY: Dragged parent: ${draggedParent ? draggedParent.userData.id : 'ROOT'}`);
+        console.log(`HIERARCHY: Target parent: ${targetParent ? targetParent.userData.id : 'ROOT'}`);
+        
         // Remove dragged object from current parent
         if (draggedParent) {
             console.log(`HIERARCHY: Removing ${draggedObject.userData.id} from container ${draggedParent.userData.id}`);
@@ -789,6 +892,10 @@ class HierarchyPanel {
         } else {
             // Target is at root level - move dragged object to root level
             console.log(`HIERARCHY: Moving ${draggedObject.userData.id} to root level`);
+            
+            // Ensure parent container reference is cleared
+            delete draggedObject.userData.parentContainer;
+            
             this.sceneManager.addObject(draggedObject);
         }
     }
@@ -810,28 +917,38 @@ class HierarchyPanel {
             return;
         }
         
-        // Remove from current parent
+        console.log(`HIERARCHY: Moving object ${object.userData.id} into container ${targetContainer.userData.id}`);
+        
+        // Remove from current parent (this is critical to prevent duplicates)
         if (object.userData.parentContainer) {
             object.userData.parentContainer.removeChild(object);
-        } else {
-            // Remove from scene if it was a root object
-            this.sceneManager.scene.remove(object);
+        } else if (object.parent) {
+            // Remove from any Three.js parent (including scene)
+            object.parent.remove(object);
         }
         
         // Add to new container
         targetContainer.addChild(object);
         
-        console.log(`Moved ${object.userData.id} to container ${targetContainer.userData.id}`);
+        // Ensure container is expanded to show the new child
+        this.expandedItems.add(targetContainer.userData.id);
+        this.updateExpandedState();
     }
     
     moveObjectToRoot(object) {
         // Remove from current parent
         if (object.userData.parentContainer) {
+            console.log(`HIERARCHY: Removing ${object.userData.id} from parent container ${object.userData.parentContainer.userData.id}`);
             object.userData.parentContainer.removeChild(object);
-            this.sceneManager.addObject(object);
         }
         
-        console.log(`Moved ${object.userData.id} to root level`);
+        // Ensure parent container reference is cleared
+        delete object.userData.parentContainer;
+        
+        // Add to scene at root level
+        this.sceneManager.addObject(object);
+        
+        console.log(`HIERARCHY: Moved ${object.userData.id} to root level`);
     }
     
     
@@ -862,6 +979,12 @@ class HierarchyPanel {
                 const searchId = String(id);
                 
                 if (childId === searchId) {
+                    // Skip container-proxy objects - we want the actual container/object
+                    if (child.userData.isContainerProxy || child.userData.type === 'container-proxy') {
+                        console.log(`HIERARCHY: Skipping container-proxy for id ${id}`);
+                        return;
+                    }
+                    
                     console.log(`HIERARCHY: Found object ${id}:`, child.userData.type, 'isContainer:', child.isContainer);
                     foundObject = child;
                 }
@@ -887,8 +1010,18 @@ class HierarchyPanel {
         const selectedObjects = this.selectionManager.getSelectedObjects();
         console.log('HIERARCHY: Updating selection for objects:', selectedObjects.map(o => o.userData.id));
         
-        // Clear all selected items
-        const previouslySelected = document.querySelectorAll('.hierarchy-item.selected');
+        // Use internal reference instead of DOM queries for better reliability
+        if (!this.treeContainer) {
+            console.warn('HIERARCHY: No tree container available');
+            return;
+        }
+        
+        const allItems = this.treeContainer.querySelectorAll('.hierarchy-item[data-object-id]');
+        console.log('HIERARCHY: Found', allItems.length, 'items in tree');
+        console.log('HIERARCHY: Available item IDs:', Array.from(allItems).map(i => i.dataset.objectId));
+        
+        // Clear all selected items using internal reference
+        const previouslySelected = this.treeContainer.querySelectorAll('.hierarchy-item.selected');
         console.log('HIERARCHY: Clearing', previouslySelected.length, 'previously selected items');
         previouslySelected.forEach(item => {
             item.classList.remove('selected');
@@ -896,15 +1029,14 @@ class HierarchyPanel {
         
         // Add selection to current items
         selectedObjects.forEach(object => {
-            const item = document.querySelector(`[data-object-id="${object.userData.id}"]`);
+            const selector = `.hierarchy-item[data-object-id="${object.userData.id}"]`;
+            console.log('HIERARCHY: Looking for item with selector:', selector);
+            const item = this.treeContainer.querySelector(selector);
             if (item) {
                 item.classList.add('selected');
-                console.log('HIERARCHY: Marked item as selected:', object.userData.id);
+                console.log('HIERARCHY: Successfully marked item as selected:', object.userData.id);
             } else {
                 console.warn('HIERARCHY: Could not find item for object:', object.userData.id);
-                // Debug: list all available items
-                const allItems = document.querySelectorAll('.hierarchy-item[data-object-id]');
-                console.log('HIERARCHY: Available items:', Array.from(allItems).map(i => i.dataset.objectId));
             }
         });
     }
@@ -948,6 +1080,46 @@ class HierarchyPanel {
     onObjectChanged(object) {
         // Update tree if object properties changed
         this.buildTree();
+    }
+    
+    // MANDATORY ARCHITECTURE PATTERN: Centralized UI sync handlers
+    handleSceneChange(changeType, data) {
+        switch (changeType) {
+            case 'object_added':
+                this.onObjectAdded(data.object);
+                break;
+            case 'object_removed':
+                this.onObjectRemoved(data.object);
+                break;
+            case 'object_modified':
+                this.onObjectChanged(data.object);
+                break;
+            case 'container_changed':
+            case 'hierarchy_changed':
+                this.buildTree(); // Full refresh for structural changes
+                break;
+        }
+    }
+    
+    handleSelectionChange(changeType, data) {
+        switch (changeType) {
+            case 'selection_changed':
+            case 'selection_cleared':
+            case 'selection_added':
+            case 'selection_removed':
+                this.updateSelectionVisuals(data.selectedObjects || []);
+                break;
+        }
+    }
+    
+    updateSelectionVisuals(selectedObjects) {
+        // Update visual selection state in hierarchy
+        const items = this.panel.querySelectorAll('.item');
+        items.forEach(item => {
+            const objectId = item.dataset.objectId;
+            const isSelected = selectedObjects.some(obj => obj.userData.id === objectId);
+            item.classList.toggle('selected', isSelected);
+        });
     }
     
     dispose() {

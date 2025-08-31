@@ -1,5 +1,5 @@
 class RectangleTool extends Tool {
-    constructor(sceneManager, eventManager, geometryManager, selectionManager, materialManager = null, stateManager = null, objectManager = null, configManager = null) {
+    constructor(sceneManager, eventManager, geometryManager, selectionManager, materialManager = null, stateManager = null, objectManager = null, configManager = null, highlightManager = null) {
         super('rectangle', sceneManager, eventManager);
         this.geometryManager = geometryManager;
         this.selectionManager = selectionManager;
@@ -7,6 +7,7 @@ class RectangleTool extends Tool {
         this.stateManager = stateManager;
         this.objectManager = objectManager;
         this.configManager = configManager;
+        this.highlightManager = highlightManager;
         this.cursor = 'crosshair';
         
         this.isDrawing = false;
@@ -22,9 +23,11 @@ class RectangleTool extends Tool {
     }
 
     activate() {
+        console.log('RECTANGLE TOOL: ACTIVATE called');
         super.activate();
         console.log('RECTANGLE TOOL: ACTIVATED - isActive:', this.isActive);
         console.log('RECTANGLE TOOL: Ready to receive mouse events');
+        this.updateStatus('Rectangle Tool - Click and drag to create rectangle');
         // Controls will be disabled when drawing starts, not on activation
     }
 
@@ -34,7 +37,12 @@ class RectangleTool extends Tool {
     }
 
     onMouseDown(event, intersectionData) {
-        console.log('RECTANGLE TOOL: MOUSEDOWN EVENT RECEIVED - button:', event.button);
+        console.log('RECTANGLE TOOL: MOUSEDOWN EVENT RECEIVED - isActive:', this.isActive, 'button:', event.button);
+        if (!this.isActive) {
+            console.log('RECTANGLE: Tool not active, ignoring mousedown');
+            return false;
+        }
+        
         if (event.button !== 0) return false; // Only left mouse button
 
         console.log('RECTANGLE: MouseDown received');
@@ -236,7 +244,9 @@ class RectangleTool extends Tool {
     // Face detection and highlighting methods
     updateFaceDetection(intersectionData) {
         // Clear previous highlighting
-        this.selectionManager.highlightSystem.clearTempHighlights();
+        if (this.highlightManager) {
+            this.highlightManager.clearTemporaryHighlights();
+        }
         
         if (intersectionData && intersectionData.object.userData.selectable) {
             console.log('RECTANGLE: Hovering over face of object:', intersectionData.object.userData.id);
@@ -251,7 +261,9 @@ class RectangleTool extends Tool {
     
     updateSnapHighlighting(intersectionData) {
         // Clear previous snap highlighting
-        this.selectionManager.highlightSystem.clearTempHighlights();
+        if (this.highlightManager) {
+            this.highlightManager.clearTemporaryHighlights();
+        }
         
         if (intersectionData && intersectionData.object === this.hoveredObject) {
             // Still on the same object - update snap highlights
@@ -267,20 +279,24 @@ class RectangleTool extends Tool {
         const edges = this.getFaceEdges(object, face);
         const corners = this.getFaceCorners(object, face);
         
-        // Highlight edges in orange
-        edges.forEach(edge => {
-            this.selectionManager.highlightSystem.highlightEdge({
-                start: edge.start,
-                end: edge.end
+        if (this.highlightManager) {
+            // Highlight edges in orange
+            edges.forEach(edge => {
+                this.highlightManager.addTemporaryHighlight({
+                    type: 'edge',
+                    start: edge.start,
+                    end: edge.end
+                });
             });
-        });
-        
-        // Highlight corners in orange
-        corners.forEach(corner => {
-            this.selectionManager.highlightSystem.highlightCorner({
-                position: corner
+            
+            // Highlight corners in orange
+            corners.forEach(corner => {
+                this.highlightManager.addTemporaryHighlight({
+                    type: 'corner',
+                    position: corner
+                });
             });
-        });
+        }
     }
     
     getCurrentDrawPosition(event, intersectionData) {
@@ -356,7 +372,9 @@ class RectangleTool extends Tool {
         }
         
         // Clear highlighting
-        this.selectionManager.highlightSystem.clearTempHighlights();
+        if (this.highlightManager) {
+            this.highlightManager.clearTemporaryHighlights();
+        }
         
         this.isDrawing = false;
         this.startPoint = null;
@@ -397,22 +415,26 @@ class RectangleTool extends Tool {
 
     showSnapHighlights(intersectionData, event) {
         // Clear previous highlights
-        this.selectionManager.highlightSystem.clearTempHighlights();
+        if (this.highlightManager) {
+            this.highlightManager.clearTemporaryHighlights();
+        }
         
         if (!intersectionData || !intersectionData.object.userData.selectable) return;
         
         const object = intersectionData.object;
         const snapPoint = this.findNearestSnapPoint(object, intersectionData, event);
         
-        if (snapPoint) {
+        if (snapPoint && this.highlightManager) {
             // Only log if we're close enough (reduce spam)
         // console.log('RECTANGLE: Snap point found -', snapPoint.type, 'at', snapPoint.position);
             if (snapPoint.type === 'corner') {
-                this.selectionManager.highlightSystem.highlightCorner({
+                this.highlightManager.addTemporaryHighlight({
+                    type: 'corner',
                     position: snapPoint.position
                 });
             } else if (snapPoint.type === 'edge') {
-                this.selectionManager.highlightSystem.highlightEdge({
+                this.highlightManager.addTemporaryHighlight({
+                    type: 'edge',
                     start: snapPoint.start,
                     end: snapPoint.end
                 });

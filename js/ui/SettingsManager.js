@@ -298,8 +298,12 @@ class SettingsManager {
             } else {
                 // Fallback to legacy system
                 app.selectionManager.refreshSelectionHighlights();
-                app.selectionManager.highlightSystem.ensureNoShadowCasting();
+                if (app.selectionManager.highlightSystem) {
+                    app.selectionManager.highlightSystem.ensureNoShadowCasting();
+                }
             }
+        } else {
+            console.log('SETTINGS: App not available yet, HighlightManager config will be applied on initialization');
         }
     }
     
@@ -365,7 +369,44 @@ class SettingsManager {
             this.configManager.set(path, value);
         });
         
+        // Also update local uiSettings object for compatibility
+        this.updateLocalUISettingsFromConfig();
+        
         console.log('SETTINGS: Applied', Object.keys(updates).length, 'settings via centralized configuration');
+    }
+    
+    /**
+     * Update local uiSettings object from centralized configuration
+     * This ensures compatibility with save/load functions
+     */
+    updateLocalUISettingsFromConfig() {
+        if (!this.configManager) return;
+        
+        // Ensure uiSettings structure exists
+        if (!this.uiSettings.background) this.uiSettings.background = {};
+        if (!this.uiSettings.grid) this.uiSettings.grid = {};
+        if (!this.uiSettings.selection) this.uiSettings.selection = {};
+        if (!this.uiSettings.highlights) this.uiSettings.highlights = {};
+        if (!this.uiSettings.rendering) this.uiSettings.rendering = {};
+        
+        // Update from config
+        this.uiSettings.background.color = this.configManager.get('ui.background.color');
+        this.uiSettings.grid.size = this.configManager.get('ui.grid.size');
+        this.uiSettings.grid.divisions = this.configManager.get('ui.grid.divisions');
+        this.uiSettings.grid.subDivisions = this.configManager.get('ui.grid.subDivisions');
+        this.uiSettings.grid.mainColor = this.configManager.get('ui.grid.mainColor');
+        this.uiSettings.grid.subColor = this.configManager.get('ui.grid.subColor');
+        this.uiSettings.selection.edgeColor = this.configManager.get('ui.selection.edgeColor');
+        this.uiSettings.selection.thickness = this.configManager.get('ui.selection.thickness');
+        this.uiSettings.selection.cornerSize = this.configManager.get('ui.selection.cornerSize');
+        this.uiSettings.selection.hitAreaSize = this.configManager.get('ui.selection.hitAreaSize');
+        this.uiSettings.highlights.hoverColor = this.configManager.get('ui.highlights.hoverColor');
+        this.uiSettings.highlights.snapColor = this.configManager.get('ui.highlights.snapColor');
+        this.uiSettings.highlights.thickness = this.configManager.get('ui.highlights.thickness');
+        this.uiSettings.rendering.shadowsEnabled = this.configManager.get('ui.rendering.shadowsEnabled');
+        this.uiSettings.rendering.wireframeMode = this.configManager.get('ui.rendering.wireframeMode');
+        
+        console.log('SETTINGS: Updated local uiSettings from centralized config');
     }
     
     updateHighlightManagerConfig(highlightManager) {
@@ -450,27 +491,35 @@ class SettingsManager {
 
     saveSettings() {
         try {
+            // First, apply current UI values to ensure we're saving the latest settings
+            console.log('SETTINGS: Applying current UI values before saving');
+            this.applyUISettings();
+            
             if (this.configManager) {
                 // Save through centralized configuration
                 const uiConfig = this.configManager.export(['ui']);
                 if (this.stateManager) {
                     this.stateManager.set('ui.settings', uiConfig);
+                    console.log('UI settings saved via ConfigurationManager to StateManager:', uiConfig);
+                    
+                    // Verify save worked
+                    const verification = this.stateManager.get('ui.settings');
+                    console.log('SETTINGS: Save verification - retrieved:', verification);
                 } else {
                     localStorage.setItem('modler-ui-settings', JSON.stringify(uiConfig));
+                    console.log('UI settings saved via ConfigurationManager to localStorage:', uiConfig);
                 }
-                console.log('UI settings saved via ConfigurationManager');
                 alert('Settings saved!');
             } else {
                 // Fallback to legacy save
                 if (this.stateManager) {
                     this.stateManager.set('ui.settings.legacy', this.uiSettings);
-                    console.log('UI settings saved to StateManager');
-                    alert('Settings saved!');
+                    console.log('UI settings saved to StateManager (legacy)');
                 } else {
                     localStorage.setItem('modler-ui-settings', JSON.stringify(this.uiSettings));
-                    console.log('UI settings saved to localStorage');
-                    alert('Settings saved to localStorage!');
+                    console.log('UI settings saved to localStorage (legacy)');
                 }
+                alert('Settings saved!');
             }
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -480,11 +529,18 @@ class SettingsManager {
 
     loadSettings() {
         try {
-            const saved = this.stateManager ? 
-                this.stateManager.get('ui.settings') :
-                localStorage.getItem('modler-ui-settings');
-            if (saved) {
-                const savedSettings = JSON.parse(saved);
+            let saved = null;
+            let savedSettings = null;
+            
+            if (this.stateManager) {
+                saved = this.stateManager.get('ui.settings');
+                savedSettings = saved; // StateManager returns objects directly
+            } else {
+                saved = localStorage.getItem('modler-ui-settings');
+                savedSettings = saved ? JSON.parse(saved) : null;
+            }
+            
+            if (savedSettings) {
                 
                 if (this.configManager) {
                     // Load through centralized configuration

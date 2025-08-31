@@ -77,12 +77,13 @@ body {
     position: absolute;
     top: 10px;
     right: 10px;
-    width: 280px;
-    background: rgba(45, 45, 45, 0.95);
-    border: 1px solid #555;
-    border-radius: 8px;
+    width: 300px;
+    background: rgba(40, 40, 40, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
     z-index: 1000;
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 /* Hierarchy Panel */
@@ -91,11 +92,12 @@ body {
     top: 10px;
     left: 10px;
     width: 280px;
-    background: rgba(45, 45, 45, 0.95);
-    border: 1px solid #555;
-    border-radius: 8px;
+    background: rgba(40, 40, 40, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
     z-index: 1000;
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .panel-actions {
@@ -289,15 +291,18 @@ body {
 }
 
 .property-group {
-    margin-bottom: 16px;
+    margin-bottom: 20px;
+    padding: 0 4px;
 }
 
 .property-group h4 {
-    font-size: 12px;
-    color: #aaa;
-    margin-bottom: 8px;
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 12px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.8px;
+    padding-left: 2px;
 }
 
 .property-row {
@@ -319,17 +324,26 @@ body {
 }
 
 .property-input {
-    width: 92px;
-    padding: 5px 9px;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid #666;
-    border-radius: 4px;
+    width: 80px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
     color: #fff;
-    font-size: 14px;
+    font-size: 13px;
+    font-weight: 500;
     text-align: right;
+    transition: all 0.15s ease;
 }
 
-/* Remove default number input arrows */
+/* Compact input variant - 50% smaller */
+.property-input-compact {
+    width: 40px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+
+/* Style the number input arrows to match design */
 .property-input::-webkit-outer-spin-button,
 .property-input::-webkit-inner-spin-button {
     -webkit-appearance: none;
@@ -338,6 +352,25 @@ body {
 
 .property-input[type=number] {
     -moz-appearance: textfield;
+}
+
+.property-input-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+/* Custom number input spinner */
+.property-input-container::after {
+    content: '';
+    position: absolute;
+    right: 8px;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 6px solid rgba(255, 255, 255, 0.4);
+    pointer-events: none;
 }
 
 .property-select {
@@ -377,7 +410,14 @@ body {
 
 .property-input:focus {
     outline: none;
-    border-color: #0078d4;
+    border-color: rgba(138, 43, 226, 0.6);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 0 0 2px rgba(138, 43, 226, 0.2);
+}
+
+.property-input:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.06);
 }
 
 .property-arrows {
@@ -416,15 +456,18 @@ body {
 }
 
 .property-group {
-    margin-bottom: 16px;
+    margin-bottom: 20px;
+    padding: 0 4px;
 }
 
 .property-group h4 {
-    font-size: 12px;
-    color: #aaa;
-    margin-bottom: 8px;
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 12px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.8px;
+    padding-left: 2px;
 }
 
 .property-value {
@@ -460,6 +503,119 @@ body {
 
 .property-row .property-button:last-child {
     margin-right: 0;
+}
+
+.dimension-input-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+.expand-padding-btn,
+.collapse-padding-btn {
+    background: #4a4a4a;
+    border: 1px solid #666;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    min-width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.expand-padding-btn:hover,
+.collapse-padding-btn:hover {
+    background: #5a5a5a;
+}
+
+.separate-padding-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+/* Axis labels with colors matching the design */
+.axis-label {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    min-width: 12px;
+    text-align: center;
+    margin-right: 4px;
+}
+
+.axis-label.axis-x {
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
+}
+
+.axis-label.axis-y {
+    color: #4ecdc4;
+    background: rgba(78, 205, 196, 0.1);
+}
+
+.axis-label.axis-z {
+    color: #45b7d1;
+    background: rgba(69, 183, 209, 0.1);
+}
+
+/* Axis labels for dimensions (W/H/D) */
+.axis-label.axis-w {
+    color: #ff9800;
+    background: rgba(255, 152, 0, 0.1);
+}
+
+.axis-label.axis-h {
+    color: #8bc34a;
+    background: rgba(139, 195, 74, 0.1);
+}
+
+.axis-label.axis-d {
+    color: #9c27b0;
+    background: rgba(156, 39, 176, 0.1);
+}
+
+/* Section headers */
+.property-section-header {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 8px;
+    margin-top: 16px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding-left: 2px;
+}
+
+.property-section-header:first-child {
+    margin-top: 0;
+}
+
+/* Axis input groups */
+.property-axis-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.property-axis-input {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.property-axis-input .axis-label {
+    flex-shrink: 0;
 }
 
 /* Viewport */

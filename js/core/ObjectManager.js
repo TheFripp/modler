@@ -5,10 +5,11 @@
  * with consistent ID generation, metadata handling, and hierarchy management.
  */
 class ObjectManager {
-    constructor(sceneManager, materialManager, stateManager) {
+    constructor(sceneManager, materialManager, stateManager, autoLayoutManager = null) {
         this.sceneManager = sceneManager;
         this.materialManager = materialManager;
         this.stateManager = stateManager;
+        this.autoLayoutManager = autoLayoutManager;
         
         // Object registry
         this.objects = new Map(); // id -> object
@@ -337,10 +338,17 @@ class ObjectManager {
         // Create geometry
         const geometry = this.createGeometry(type, metadata);
         
-        // Get material
+        // Get material with type-specific properties
+        let materialProperties = options.materialProperties || {};
+        
+        // Make rectangles (planes) double-sided so they're visible from both sides
+        if (type === 'rectangle') {
+            materialProperties.side = THREE.DoubleSide;
+        }
+        
         const material = this.materialManager.getObjectMaterial(
             options.color,
-            options.materialProperties
+            materialProperties
         );
         
         // Create mesh
@@ -371,7 +379,8 @@ class ObjectManager {
             metadata.id || 'Container',
             this, // objectManager
             this.materialManager,
-            this.sceneManager
+            this.sceneManager,
+            this.autoLayoutManager
         );
         
         // Set position if provided
@@ -407,13 +416,15 @@ class ObjectManager {
     updateHierarchyState(object) {
         // Add to root objects if no parent
         if (!object.userData.parentContainer) {
-            const rootObjects = this.stateManager.get('hierarchy.rootObjects');
-            rootObjects.add(object.userData.id);
-            this.stateManager.set('hierarchy.rootObjects', rootObjects);
+            const rootObjects = this.stateManager.get('hierarchy.rootObjects') || new Set();
+            // Ensure it's a Set
+            const rootObjectsSet = rootObjects instanceof Set ? rootObjects : new Set(rootObjects);
+            rootObjectsSet.add(object.userData.id);
+            this.stateManager.set('hierarchy.rootObjects', rootObjectsSet);
         }
         
         // Add to layer order
-        const layerOrder = this.stateManager.get('hierarchy.layerOrder');
+        const layerOrder = this.stateManager.get('hierarchy.layerOrder') || [];
         if (!layerOrder.includes(object.userData.id)) {
             layerOrder.push(object.userData.id);
             this.stateManager.set('hierarchy.layerOrder', layerOrder);

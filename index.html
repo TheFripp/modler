@@ -164,7 +164,7 @@
                         </div>
                     </div>
                     <div class="property-row">
-                        <span class="property-label">Corner Size:</span>
+                        <span class="property-label">Corner Size (world units):</span>
                         <div class="property-input-container">
                             <input class="property-input" id="ui-corner-size" type="number" min="0.02" max="0.3" step="0.01" value="0.05" />
                             <div class="property-arrows">
@@ -198,7 +198,7 @@
                 <div class="property-group">
                     <h4>Interaction</h4>
                     <div class="property-row">
-                        <span class="property-label">Hit Area Size:</span>
+                        <span class="property-label">Hit Area Size (px):</span>
                         <div class="property-input-container">
                             <input class="property-input" id="ui-hit-area" type="number" min="12" max="48" step="4" value="24" />
                             <div class="property-arrows">
@@ -268,11 +268,15 @@
     <script src="js/core/ConfigurationManager.js"></script>
     <script src="js/core/HighlightManager.js"></script>
     <script src="js/core/SnapManager.js"></script>
+    <script src="js/core/AutoLayoutManager.js"></script>
+    <script src="js/core/FaceDetectionSystem.js"></script>
     
     <!-- Geometry and Highlighting -->
     <script src="js/geometry/GeometryManager.js"></script>
+    <script src="js/ui/PropertyPanelManager.js"></script>
     <script src="js/geometry/SelectionManager.js"></script>
     <script src="js/geometry/Container.js"></script>
+    <script src="js/geometry/ContainerInteractionHandler.js"></script>
     <script src="js/core/Grid.js"></script>
     
     <!-- Tools -->
@@ -289,6 +293,6 @@
     <script src="js/ui/HierarchyPanel.js"></script>
     
     <!-- Main Application -->
-    <script src="js/main-refactored.js"></script>
+    <script src="js/main.js"></script>
 </body>
 </html>

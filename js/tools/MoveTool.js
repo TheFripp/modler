@@ -14,6 +14,12 @@ class MoveTool extends Tool {
         this.isMoving = false;
         this.moveData = null;
         this.lastPropertyUpdate = 0;
+        
+        // Container interaction handler for centralized container logic
+        this.containerHandler = new ContainerInteractionHandler(highlightManager);
+        
+        // Move tool maintains its own selection preservation logic
+        // Uses centralized hierarchical methods but keeps tool-specific behavior
     }
 
     activate() {
@@ -33,6 +39,10 @@ class MoveTool extends Tool {
     deactivate() {
         super.deactivate();
         this.endMove();
+        
+        // Reset centralized hierarchical selection state
+        this.selectionManager.resetHierarchicalState();
+        
         // Clear any hover highlights using centralized system
         if (this.highlightManager) {
             this.highlightManager.clearTemporaryHighlights();
@@ -56,21 +66,82 @@ class MoveTool extends Tool {
         
         // If we clicked on a selectable object, analyze what part was clicked
         if (intersectionData && intersectionData.object.userData.selectable) {
-            let targetObject = intersectionData.object;
+            let clickedObject = intersectionData.object;
             
-            // If clicking on container proxy, select the actual container
-            if (intersectionData.object.userData.isContainerProxy) {
-                targetObject = intersectionData.object.userData.parentContainer;
-                console.log('MOVE: Clicked on container proxy, selecting container:', targetObject.userData.id);
+            // Handle container geometry (not proxy - that's obsolete)
+            if (intersectionData.object.userData.isContainerGeometry) {
+                clickedObject = intersectionData.object.userData.parentContainer;
             }
             
-            // Select the object if not already selected
-            if (!this.selectionManager.isSelected(targetObject)) {
-                this.selectionManager.selectOnly(targetObject);
+            // Use centralized double-click detection
+            const currentTime = Date.now();
+            const isDoubleClick = this.selectionManager.detectDoubleClick(currentTime, clickedObject);
+            
+            let targetObject = null;
+            
+            if (isDoubleClick) {
+                // Double-click: try to go deeper in hierarchy
+                console.log('MOVE: Double-click detected, attempting to go deeper');
+                const result = this.selectionManager.handleHierarchicalDoubleClick(event, { object: clickedObject }, this.selectionManager.hierarchicalState.currentDepthMap);
+                targetObject = result;
+                if (!targetObject) {
+                    // If we can't go deeper, keep the current selection
+                    const currentSelection = this.selectionManager.getSelectedObjects();
+                    targetObject = currentSelection.length > 0 ? currentSelection[0] : null;
+                }
+            } else {
+                // Single click: check if the clicked object (or its container) is already selected
+                const outermostContainer = this.selectionManager.getOutermostContainer(clickedObject);
+                const isAlreadySelected = this.selectionManager.isSelected(clickedObject) || 
+                                        this.selectionManager.isSelected(outermostContainer);
+                
+                if (isAlreadySelected) {
+                    // Don't override existing selection - use what's currently selected
+                    console.log('MOVE: Object or its container already selected, using current selection');
+                    const currentSelection = this.selectionManager.getSelectedObjects();
+                    targetObject = currentSelection.length > 0 ? currentSelection[0] : null;
+                } else {
+                    // Use hierarchical selection
+                    console.log('MOVE: New selection, using hierarchical selection');
+                    targetObject = this.selectionManager.handleHierarchicalClick(event, intersectionData, 'move');
+                    // Reset depth tracking for new selections
+                    this.selectionManager.hierarchicalState.currentDepthMap.clear();
+                    if (targetObject) {
+                        this.selectionManager.hierarchicalState.currentDepthMap.set(targetObject.userData.id, 0);
+                    }
+                }
             }
             
-            // Determine if we clicked on a face, edge, or corner
-            const clickAnalysis = this.analyzeClick(intersectionData);
+            // Click tracking handled by centralized system
+            
+            // If no target object was determined, return false
+            if (!targetObject) {
+                return false;
+            }
+            
+            // For containers, handle click analysis differently
+            let clickAnalysis;
+            if (targetObject && targetObject.isContainer) {
+                // Use centralized container interaction handler
+                const containerFace = this.containerHandler.getContainerFaceFromIntersection(targetObject, intersectionData);
+                if (containerFace) {
+                    clickAnalysis = {
+                        type: 'face',
+                        data: {
+                            face: containerFace.face,
+                            worldNormal: containerFace.worldNormal,
+                            point: intersectionData.point,
+                            object: targetObject,
+                            axis: this.containerHandler.getNormalAxis(containerFace.worldNormal)
+                        }
+                    };
+                } else {
+                    clickAnalysis = this.analyzeClick(intersectionData);
+                }
+            } else {
+                clickAnalysis = this.analyzeClick(intersectionData);
+            }
+            
             this.startMove(event, intersectionData, clickAnalysis);
             return true; // Block camera controls when starting move
         } else {
@@ -248,6 +319,26 @@ class MoveTool extends Tool {
         this.isMoving = true;
         this.isOperating = true;
         
+        // Mark containers to prevent auto-resize during movement
+        selectedObjects.forEach(object => {
+            if (object.isContainer) {
+                object.userData._isBeingMoved = true;
+            }
+        });
+        
+        // Hide non-selection highlights during move, keep selection highlights visible
+        if (this.highlightManager) {
+            this.highlightManager.hideNonSelectionHighlights();
+            // Also aggressively clear all face highlights at the start of move
+            this.highlightManager.clearFaceHoverHighlights();
+            selectedObjects.forEach(object => {
+                this.highlightManager.clearSelectedFaceHighlight(object);
+            });
+        }
+        
+        // Hide container bounding box helpers during move to prevent them showing in wrong positions
+        this.selectionManager.hideContainerBoundingBoxes();
+        
         // Disable camera controls during move
         const app = window.modlerApp;
         if (app && app.rendererManager) {
@@ -277,9 +368,14 @@ class MoveTool extends Tool {
     }
     
     getConstrainedAxis(clickAnalysis) {
+        if (!clickAnalysis || !clickAnalysis.data) {
+            return null;
+        }
+        
         switch (clickAnalysis.type) {
             case 'face':
-                return clickAnalysis.data.axis; // Move perpendicular to face
+                // For face clicks, return 'normal' to indicate normal-constrained movement
+                return 'normal';
             case 'edge':
                 return clickAnalysis.data.axis; // Move along edge
             case 'corner':
@@ -296,10 +392,15 @@ class MoveTool extends Tool {
         let delta = new THREE.Vector3();
         let snapPosition = null;
         
-        // Check for snapping to other objects
+        // Check for snapping using centralized SnapManager
         const currentMousePos = this.eventManager.getGroundPosition(event);
-        if (currentMousePos) {
-            snapPosition = this.findSnapPosition(currentMousePos, event);
+        if (currentMousePos && this.snapManager) {
+            const selectedObjects = this.selectionManager.getSelectedObjects();
+            const snapTarget = this.snapManager.getBestSnapTarget(currentMousePos, selectedObjects);
+            if (snapTarget) {
+                snapPosition = snapTarget.position;
+                console.log('MOVE: Using centralized snap target:', snapTarget.type, 'at position:', snapPosition);
+            }
         }
         
         if (snapPosition) {
@@ -328,24 +429,28 @@ class MoveTool extends Tool {
             const newPosition = initialPosition.clone().add(delta);
             object.position.copy(newPosition);
             
-            // Update any associated highlights using centralized system
-            if (this.highlightManager) {
-                this.highlightManager.addSelectionHighlight(object);
-            } else if (this.selectionManager.highlightSystem) {
-                // Fallback for legacy system
-                this.selectionManager.highlightSystem.updateObjectEdgeHighlight(object);
-            }
-            
-            // If this is a container, update its selectable proxy position
-            if (object.isContainer && object.selectableProxy) {
-                object.updateSelectableProxy();
-            }
-            
-            // Notify parent container during movement for real-time bounding box updates
-            if (object.userData.parentContainer && object.userData.parentContainer.onChildChanged) {
-                object.userData.parentContainer.onChildChanged();
+            // If this is a container, don't update bounding box during movement
+            // This prevents the container from stretching/resizing while being moved
+            if (object.isContainer) {
+                // Don't call updateBoundingBox() during movement - this causes stretching
+                // The container should move as a solid unit
+                // Don't notify parent container - we're moving the whole container as a unit
+            } else {
+                // Only notify parent container for regular objects (not containers)
+                // And only if we're not moving a container - check if the parent is also selected
+                if (object.userData.parentContainer && 
+                    object.userData.parentContainer.onChildChanged &&
+                    !this.selectionManager.isSelected(object.userData.parentContainer)) {
+                    object.userData.parentContainer.onChildChanged();
+                }
             }
         });
+        
+        // Update selection highlight positions to follow the moved objects
+        if (this.highlightManager) {
+            const movedObjects = this.moveData.objects.map(item => item.object);
+            this.highlightManager.updateHighlightPositions(movedObjects);
+        }
         
         // Update properties panel in real-time (throttled)
         if (!this.lastPropertyUpdate || Date.now() - this.lastPropertyUpdate > 100) {
@@ -387,23 +492,31 @@ class MoveTool extends Tool {
         const delta = new THREE.Vector3();
         const axisVector = new THREE.Vector3();
         
-        switch (this.moveData.constrainedAxis) {
-            case 'x':
-                axisVector.set(1, 0, 0);
-                break;
-            case 'y':
-                axisVector.set(0, 1, 0);
-                break;
-            case 'z':
-                axisVector.set(0, 0, 1);
-                break;
-            default:
-                return new THREE.Vector3();
+        // Handle face normal constraint
+        if (this.moveData.constrainedAxis === 'normal' && this.moveData.clickAnalysis && this.moveData.clickAnalysis.data && this.moveData.clickAnalysis.data.worldNormal) {
+            const faceNormal = this.moveData.clickAnalysis.data.worldNormal.clone().normalize();
+            const projectedDistance = worldMovement.dot(faceNormal);
+            delta.copy(faceNormal.multiplyScalar(projectedDistance));
+        } else {
+            // Handle standard axis constraints
+            switch (this.moveData.constrainedAxis) {
+                case 'x':
+                    axisVector.set(1, 0, 0);
+                    break;
+                case 'y':
+                    axisVector.set(0, 1, 0);
+                    break;
+                case 'z':
+                    axisVector.set(0, 0, 1);
+                    break;
+                default:
+                    return new THREE.Vector3();
+            }
+            
+            // Project the world movement onto the axis
+            const projectedDistance = worldMovement.dot(axisVector);
+            delta.copy(axisVector.multiplyScalar(projectedDistance));
         }
-        
-        // Project the world movement onto the axis
-        const projectedDistance = worldMovement.dot(axisVector);
-        delta.copy(axisVector.multiplyScalar(projectedDistance));
         
         // Removed excessive debugging
         
@@ -421,18 +534,207 @@ class MoveTool extends Tool {
             return;
         }
         
-        // Only show highlights for selected objects (Move tool behavior)
-        const isSelected = this.selectionManager.isSelected(intersectionData.object);
-        if (!isSelected) {
-            return;
-        }
+        const object = intersectionData.object;
         
-        // For move tool, always show face highlights on hover for selected objects
-        if (intersectionData.face) {
-            this.highlightManager.addFaceHoverHighlight(intersectionData);
+        if (this.isMoving) {
+            // During move: Show snap targets on other objects
+            this.showSnapTargets(intersectionData);
+        } else {
+            // When hovering: Show appropriate highlights based on object type
+            // Check if the hovered object is part of a selected container
+            let targetObject = object;
+            let isSelectedContainer = false;
+            
+            // If we hit a child of a selected container, highlight the container instead
+            if (object.userData.parentContainer && this.selectionManager.isSelected(object.userData.parentContainer)) {
+                targetObject = object.userData.parentContainer;
+                isSelectedContainer = true;
+            } else if (this.selectionManager.isSelected(object)) {
+                isSelectedContainer = object.isContainer;
+            }
+            
+            // Selection checking is now centralized in HighlightManager.addFaceHoverHighlight()
+            if (isSelectedContainer) {
+                // Show container face highlights when hovering selected containers or their children
+                this.showContainerFaceHighlights(targetObject, intersectionData);
+            } else {
+                // For regular objects, show normal highlights  
+                this.showObjectHighlights(targetObject, intersectionData);
+            }
         }
+    }
+    
+    showContainerFaceHighlights(container, intersectionData) {
+        // Use centralized container interaction handler for face highlighting
+        this.containerHandler.showContainerFaceHighlight(container, intersectionData);
+    }
+    
+    // REMOVED: getContainerFaceFromIntersection - now handled by ContainerInteractionHandler
+    
+    // REMOVED: getFaceIndexForNormal - now handled by ContainerInteractionHandler
+    
+    // REMOVED: getNormalAxis - now handled by ContainerInteractionHandler
+    
+    showObjectHighlights(object, intersectionData) {
+        // Show edges and corners on selected objects for grab points
+        if (this.highlightManager) {
+            // Show face highlight when hovering selected objects
+            if (intersectionData.face) {
+                this.highlightManager.addFaceHoverHighlight(intersectionData);
+            }
+            
+            // Show edge and corner highlights for grab points
+            this.addEdgeAndCornerHighlights(object);
+        }
+    }
+    
+    showSnapTargets(intersectionData) {
+        // During move operation, show snap targets on other objects
+        if (!this.snapManager || !this.isMoving) return;
         
-        // MoveTool only shows face highlights - no edge/corner highlights needed
+        const object = intersectionData.object;
+        const selectedObjects = this.selectionManager.getSelectedObjects();
+        
+        // Don't show snap targets on objects being moved
+        if (selectedObjects.includes(object)) return;
+        
+        // Use centralized snap manager to find and show snap targets
+        if (this.snapManager && this.moveData) {
+            const currentPosition = this.moveData.objects[0]?.object.position;
+            if (currentPosition) {
+                const snapTarget = this.snapManager.getBestSnapTarget(currentPosition, selectedObjects, object);
+                if (snapTarget) {
+                    this.snapManager.showSnapPreview(snapTarget);
+                    // Also highlight the snap target on the target object
+                    this.highlightSnapTarget(object, snapTarget);
+                }
+            }
+        }
+    }
+    
+    addEdgeAndCornerHighlights(object) {
+        // Add orange highlights for edges and corners
+        const bounds = new THREE.Box3().setFromObject(object);
+        
+        // Add corner highlights
+        const corners = this.getObjectCorners(bounds);
+        corners.forEach(corner => {
+            this.highlightManager.addTemporaryHighlight({
+                type: 'corner',
+                position: corner,
+                color: 0xff6600 // Orange
+            });
+        });
+        
+        // Add edge highlights  
+        const edges = this.getObjectEdges(bounds);
+        edges.forEach(edge => {
+            this.highlightManager.addTemporaryHighlight({
+                type: 'edge',
+                start: edge.start,
+                end: edge.end,
+                color: 0xff6600 // Orange
+            });
+        });
+    }
+    
+    highlightSnapTarget(object, snapTarget) {
+        // Highlight the specific snap target (corner/edge/face) on the target object
+        if (this.highlightManager) {
+            this.highlightManager.addTemporaryHighlight({
+                type: snapTarget.type,
+                position: snapTarget.position,
+                start: snapTarget.start,
+                end: snapTarget.end,
+                color: 0x00ff00 // Green for snap targets
+            });
+        }
+    }
+    
+    getObjectCorners(bounds) {
+        // Return the 8 corners of the bounding box
+        return [
+            new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+            new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+            new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+            new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+            new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+            new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+            new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+            new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z)
+        ];
+    }
+    
+    getObjectEdges(bounds) {
+        // Return the 12 edges of the bounding box
+        const corners = this.getObjectCorners(bounds);
+        return [
+            // Bottom face edges
+            { start: corners[0], end: corners[1] },
+            { start: corners[1], end: corners[3] },
+            { start: corners[3], end: corners[2] },
+            { start: corners[2], end: corners[0] },
+            // Top face edges  
+            { start: corners[4], end: corners[5] },
+            { start: corners[5], end: corners[7] },
+            { start: corners[7], end: corners[6] },
+            { start: corners[6], end: corners[4] },
+            // Vertical edges
+            { start: corners[0], end: corners[4] },
+            { start: corners[1], end: corners[5] },
+            { start: corners[2], end: corners[6] },
+            { start: corners[3], end: corners[7] }
+        ];
+    }
+    
+    applyFinalSnapping() {
+        // Apply snapping when move operation ends
+        if (!this.snapManager || !this.moveData) return;
+        
+        const selectedObjects = this.selectionManager.getSelectedObjects();
+        if (selectedObjects.length === 0) return;
+        
+        // Find the best snap target for the primary object
+        const primaryObject = selectedObjects[0];
+        const currentPosition = primaryObject.position.clone();
+        
+        // Get all potential target objects (not selected)
+        const targetObjects = [];
+        this.sceneManager.scene.traverse(child => {
+            if (child.userData && child.userData.selectable && !selectedObjects.includes(child)) {
+                targetObjects.push(child);
+            }
+        });
+        
+        // Find best snap target across all target objects
+        let bestSnapTarget = null;
+        let shortestDistance = Infinity;
+        
+        targetObjects.forEach(targetObject => {
+            const snapTarget = this.snapManager.getBestSnapTarget(currentPosition, selectedObjects, targetObject);
+            if (snapTarget && snapTarget.distance < shortestDistance) {
+                bestSnapTarget = snapTarget;
+                shortestDistance = snapTarget.distance;
+            }
+        });
+        
+        // Apply snapping if within snap threshold
+        if (bestSnapTarget && shortestDistance <= this.snapManager.getSnapThreshold()) {
+            console.log('MOVE: Applying final snap to', bestSnapTarget.type, 'at distance', shortestDistance);
+            
+            // Calculate offset to apply to all selected objects
+            const snapOffset = bestSnapTarget.position.clone().sub(currentPosition);
+            
+            // Apply snap offset to all selected objects
+            selectedObjects.forEach(object => {
+                object.position.add(snapOffset);
+            });
+            
+            // Update highlight positions after snapping
+            if (this.highlightManager) {
+                this.highlightManager.updateHighlightPositions(selectedObjects);
+            }
+        }
     }
     
     
@@ -516,11 +818,30 @@ class MoveTool extends Tool {
     endMove() {
         if (!this.isMoving) return;
         
-        // Notify parent containers that children have changed
+        // Apply final snapping before ending move
+        this.applyFinalSnapping();
+        
+        // Notify parent containers that children have changed (but only for non-container objects)
         const selectedObjects = this.selectionManager.getSelectedObjects();
         selectedObjects.forEach(object => {
-            if (object.userData.parentContainer && object.userData.parentContainer.onChildChanged) {
+            // Only notify parent containers if:
+            // 1. The object has a parent container
+            // 2. The object itself is not a container (containers move as whole units)
+            // 3. The parent container is not also selected (avoid double notifications)
+            if (object.userData.parentContainer && 
+                object.userData.parentContainer.onChildChanged &&
+                !object.isContainer &&
+                !this.selectionManager.isSelected(object.userData.parentContainer)) {
                 object.userData.parentContainer.onChildChanged();
+            }
+        });
+        
+        // Clear movement flags from containers and update their bounding boxes
+        selectedObjects.forEach(object => {
+            if (object.isContainer) {
+                delete object.userData._isBeingMoved;
+                // Now that movement is complete, update the bounding box helper position
+                object.updateBoundingBox();
             }
         });
         
@@ -528,16 +849,28 @@ class MoveTool extends Tool {
         this.isOperating = false;
         this.moveData = null;
         
+        // Show all highlights again after move operation
+        if (this.highlightManager) {
+            this.highlightManager.showAllHighlights();
+        }
+        
+        // Show container bounding box helpers again after move
+        this.selectionManager.showContainerBoundingBoxes();
+        
         // Clear all temporary highlights (edges, corners, faces) using centralized system
         if (this.highlightManager) {
             this.highlightManager.clearTemporaryHighlights();
-        } else if (this.selectionManager.highlightSystem) {
-            // Fallback for legacy system
-            if (this.highlightManager) {
-                this.highlightManager.clearTemporaryHighlights();
-            } else if (this.selectionManager?.highlightSystem?.clearTemporaryHighlights) {
-                this.selectionManager.highlightSystem.clearTemporaryHighlights();
-            }
+            this.highlightManager.clearFaceHoverHighlights();
+            
+            // Also clear any stuck face highlights from selected objects
+            selectedObjects.forEach(object => {
+                this.highlightManager.removeFaceHighlight(object);
+            });
+        }
+        
+        // Clear snap previews
+        if (this.snapManager) {
+            this.snapManager.clearSnapPreview();
         }
         
         // Re-enable camera controls
@@ -567,13 +900,7 @@ class MoveTool extends Tool {
                     if (this.moveData) {
                         this.moveData.objects.forEach(({ object, initialPosition }) => {
                             object.position.copy(initialPosition);
-                            // Update highlights using centralized system
-                            if (this.highlightManager) {
-                                this.highlightManager.addSelectionHighlight(object);
-                            } else if (this.selectionManager.highlightSystem) {
-                                // Fallback for legacy system
-                                this.selectionManager.highlightSystem.updateObjectEdgeHighlight(object);
-                            }
+                            // Selection highlighting is handled by SelectionManager automatically
                         });
                     }
                     this.endMove();

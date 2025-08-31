@@ -18,6 +18,8 @@ class PushPullTool extends Tool {
         this.isPushing = false;
         this.pushData = null;
         this.targetFace = null;
+        
+        // Uses centralized hierarchical selection methods
     }
 
     activate() {
@@ -38,6 +40,9 @@ class PushPullTool extends Tool {
         super.deactivate();
         this.endPushPull();
         
+        // Reset centralized hierarchical selection state
+        this.selectionManager.resetHierarchicalState();
+        
         // Clear face hover highlights when deactivating
         if (this.highlightManager) {
             this.highlightManager.clearFaceHoverHighlights();
@@ -54,23 +59,72 @@ class PushPullTool extends Tool {
         
         // Check if we can start push/pull operation
         if (intersectionData && intersectionData.object.userData.selectable) {
-            let targetObject = intersectionData.object;
+            let clickedObject = intersectionData.object;
             
-            // If clicking on container proxy, select the actual container
-            if (intersectionData.object.userData.isContainerProxy) {
-                targetObject = intersectionData.object.userData.parentContainer;
-                console.log('PUSHPULL: Clicked on container proxy, selecting container:', targetObject.userData.id);
-                // Can't push/pull containers, just select them
-                this.selectionManager.selectOnly(targetObject);
+            // Handle container geometry (not proxy - that's obsolete)
+            if (intersectionData.object.userData.isContainerGeometry) {
+                clickedObject = intersectionData.object.userData.parentContainer;
+            }
+            
+            // Use centralized double-click detection
+            const currentTime = Date.now();
+            const isDoubleClick = this.selectionManager.detectDoubleClick(currentTime, clickedObject);
+            
+            let targetObject = null;
+            
+            if (isDoubleClick) {
+                // Double-click: try to go deeper in hierarchy
+                console.log('PUSHPULL: Double-click detected, attempting to go deeper');
+                const result = this.selectionManager.handleHierarchicalDoubleClick(event, { object: clickedObject }, this.selectionManager.hierarchicalState.currentDepthMap);
+                targetObject = result;
+                if (!targetObject) {
+                    // If we can't go deeper, keep the current selection
+                    const currentSelection = this.selectionManager.getSelectedObjects();
+                    targetObject = currentSelection.length > 0 ? currentSelection[0] : null;
+                }
+            } else {
+                // Single click: check if the clicked object (or its container) is already selected
+                const outermostContainer = this.selectionManager.getOutermostContainer(clickedObject);
+                const isAlreadySelected = this.selectionManager.isSelected(clickedObject) || 
+                                        this.selectionManager.isSelected(outermostContainer);
+                
+                if (isAlreadySelected) {
+                    // Don't override existing selection - use what's currently selected
+                    console.log('PUSHPULL: Object or its container already selected, using current selection');
+                    const currentSelection = this.selectionManager.getSelectedObjects();
+                    targetObject = currentSelection.length > 0 ? currentSelection[0] : null;
+                } else {
+                    // Use hierarchical selection
+                    console.log('PUSHPULL: New selection, using hierarchical selection');
+                    targetObject = this.selectionManager.handleHierarchicalClick(event, intersectionData, 'pushpull');
+                    // Reset depth tracking for new selections
+                    this.selectionManager.hierarchicalState.currentDepthMap.clear();
+                    if (targetObject) {
+                        this.selectionManager.hierarchicalState.currentDepthMap.set(targetObject.userData.id, 0);
+                    }
+                }
+            }
+            
+            // Click tracking handled by centralized system
+            
+            // If no target object was determined, return false
+            if (!targetObject) {
+                return false;
+            }
+            
+            // Can't push/pull containers, just select them
+            if (targetObject.isContainer) {
+                console.log('PUSHPULL: Selected container, push/pull not supported on containers');
                 return false; // Allow camera interaction
             }
             
-            if (this.geometryManager.canPushPullFace(targetObject, intersectionData.face)) {
+            // Check if we can push/pull the face on the selected object
+            if (intersectionData.face && this.geometryManager.canPushPullFace(targetObject, intersectionData.face)) {
                 this.startPushPull(event, intersectionData);
                 return true; // Prevent camera interaction during push/pull
             } else {
-                // Just select the object if we can't push/pull it
-                this.selectionManager.selectOnly(targetObject);
+                // Just keep the object selected if we can't push/pull it
+                console.log('PUSHPULL: Cannot push/pull face on object:', targetObject.userData.id);
                 return false; // Allow camera interaction
             }
         } else {
@@ -108,7 +162,8 @@ class PushPullTool extends Tool {
             if (this.highlightManager) {
                 this.highlightManager.clearFaceHoverHighlights();
                 
-                // Show face highlight if hovering over a pushable face
+                // Show face highlight if hovering over a pushable face on a selected object
+                // Selection checking is now centralized in HighlightManager.addFaceHoverHighlight()
                 if (intersectionData && intersectionData.face && 
                     this.geometryManager.canPushPullFace(intersectionData.object, intersectionData.face)) {
                     this.highlightManager.addFaceHoverHighlight(intersectionData);
@@ -145,6 +200,11 @@ class PushPullTool extends Tool {
         console.log('Starting interactive push/pull');
         this.isPushing = true;
         this.isOperating = true;
+        
+        // Hide non-selection highlights during push/pull operation
+        if (this.highlightManager) {
+            this.highlightManager.hideNonSelectionHighlights();
+        }
         
         // Update cursor for push/pull operation
         this.cursor = 'grabbing';
@@ -258,34 +318,66 @@ class PushPullTool extends Tool {
         if (Math.abs(worldNormal.y) > 0.7) {
             // Top or bottom face - change height
             newHeight = Math.max(0.01, initialDims.height + mouseDelta);
-            // Adjust position so the clicked face moves with mouse
+            // Keep the opposite face fixed by only moving center in the direction of the pushed face
             const heightChange = newHeight - initialDims.height;
-            newPosition.y = initialPos.y + heightChange * Math.sign(worldNormal.y) * 0.5;
+            if (worldNormal.y > 0) {
+                // Pushing top face up - move center up by half the change to keep bottom face fixed
+                newPosition.y = initialPos.y + heightChange * 0.5;
+            } else {
+                // Pushing bottom face down - move center down by half the change to keep top face fixed
+                newPosition.y = initialPos.y - heightChange * 0.5;
+            }
         } else if (Math.abs(worldNormal.x) > 0.7) {
             // Left or right face - change width  
             newWidth = Math.max(0.01, initialDims.width + mouseDelta);
-            // Adjust position so the clicked face moves with mouse
+            // Keep the opposite face fixed by only moving center in the direction of the pushed face
             const widthChange = newWidth - initialDims.width;
-            newPosition.x = initialPos.x + widthChange * Math.sign(worldNormal.x) * 0.5;
+            if (worldNormal.x > 0) {
+                // Pushing right face right - move center right by half the change to keep left face fixed
+                newPosition.x = initialPos.x + widthChange * 0.5;
+            } else {
+                // Pushing left face left - move center left by half the change to keep right face fixed
+                newPosition.x = initialPos.x - widthChange * 0.5;
+            }
         } else if (Math.abs(worldNormal.z) > 0.7) {
             // Front or back face - change depth
             newDepth = Math.max(0.01, initialDims.depth + mouseDelta);
-            // Adjust position so the clicked face moves with mouse
+            // Keep the opposite face fixed by only moving center in the direction of the pushed face
             const depthChange = newDepth - initialDims.depth;
-            newPosition.z = initialPos.z + depthChange * Math.sign(worldNormal.z) * 0.5;
+            if (worldNormal.z > 0) {
+                // Pushing back face back - move center back by half the change to keep front face fixed
+                newPosition.z = initialPos.z + depthChange * 0.5;
+            } else {
+                // Pushing front face forward - move center forward by half the change to keep back face fixed
+                newPosition.z = initialPos.z - depthChange * 0.5;
+            }
         }
         
-        // Update geometry and position
-        const newGeometry = new THREE.BoxGeometry(newWidth, newHeight, newDepth);
-        object.geometry.dispose();
-        object.geometry = newGeometry;
-        
-        object.position.copy(newPosition);
-        
-        // Update user data
-        object.userData.width = newWidth;
-        object.userData.height = newHeight;
-        object.userData.depth = newDepth;
+        // Handle containers differently from regular objects
+        if (object.isContainer || object.userData.isContainerGeometry) {
+            // Get the actual container reference
+            const container = object.isContainer ? object : object.userData.parentContainer;
+            
+            if (container && container.isContainer) {
+                // Use container's resize method to handle geometry and children
+                container.resize(newWidth, newHeight, newDepth);
+                container.position.copy(newPosition);
+            } else {
+                console.warn('PushPull: Could not find container reference for container geometry');
+            }
+        } else {
+            // Update geometry and position for regular objects
+            const newGeometry = new THREE.BoxGeometry(newWidth, newHeight, newDepth);
+            object.geometry.dispose();
+            object.geometry = newGeometry;
+            
+            object.position.copy(newPosition);
+            
+            // Update user data
+            object.userData.width = newWidth;
+            object.userData.height = newHeight;
+            object.userData.depth = newDepth;
+        }
         
         // Change type from rectangle to box if this was a flat shape that's now 3D
         if (object.userData.type === 'rectangle' && newDepth > 0.1) {
@@ -306,12 +398,11 @@ class PushPullTool extends Tool {
             this.selectionManager.highlightSystem.clearTempHighlights();
         }
         
-        // Update edge highlighting with new geometry
-        // Update highlights using centralized system
+        // Update selection highlight per implementation guide
         if (this.highlightManager) {
-            this.highlightManager.addSelectionHighlight(object);
+            this.highlightManager.updateHighlightPositions([object]);
         } else if (this.selectionManager.highlightSystem) {
-            // Fallback for legacy system
+            // Fallback to legacy system per implementation guide
             this.selectionManager.highlightSystem.updateObjectEdgeHighlight(object);
         }
     }
@@ -323,6 +414,11 @@ class PushPullTool extends Tool {
         this.isOperating = false;
         this.cursor = 'grab';
         this.updateCursor();
+        
+        // Show all highlights again after push/pull operation
+        if (this.highlightManager) {
+            this.highlightManager.showAllHighlights();
+        }
         
         // Clean up all face highlights that might be left behind using centralized system
         if (this.highlightManager) {
@@ -390,13 +486,7 @@ class PushPullTool extends Tool {
             this.selectionManager.highlightSystem.clearFaceHover({ object });
             this.selectionManager.highlightSystem.clearTempHighlights();
         }
-        // Update highlights using centralized system
-        if (this.highlightManager) {
-            this.highlightManager.addSelectionHighlight(object);
-        } else if (this.selectionManager.highlightSystem) {
-            // Fallback for legacy system
-            this.selectionManager.highlightSystem.updateObjectEdgeHighlight(object);
-        }
+        // Selection highlighting is handled by SelectionManager automatically
         
         this.endPushPull();
         console.log('Push/pull canceled');

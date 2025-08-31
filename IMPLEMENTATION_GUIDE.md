@@ -480,8 +480,8 @@ Container.selectableProxy = THREE.Mesh {
 
 ## Centralized Highlighting System
 
-### **NEW PATTERN** 🆕
-**Status**: Centralized highlight management with tool-specific configuration
+### **ESTABLISHED PATTERN** ✅
+**Status**: Centralized highlight management with hierarchical positioning support
 
 #### HighlightManager Architecture
 The HighlightManager provides a unified API for all highlighting needs while allowing tool-specific and object-type specific customizations.
@@ -559,10 +559,191 @@ highlightManager.setContext({
 // All active highlights automatically update to reflect new context
 ```
 
+#### Hierarchical Positioning Support
+```javascript
+// CRITICAL: All highlight positioning now uses world coordinates
+object.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+highlight.position.copy(worldPosition);
+highlight.setRotationFromQuaternion(worldQuaternion);
+highlight.scale.copy(worldScale);
+
+// Container movement triggers child highlight updates
+container.onChildChanged() → selectionManager.updateContainerAndChildHighlights()
+```
+
+#### Coordinate System Consistency
+```javascript
+// ESTABLISHED PATTERN: Consistent coordinate transformations
+// ❌ WRONG: Applying transformation matrix to offset vectors
+const worldCenter = localOffset.applyMatrix4(object.matrixWorld);
+
+// ✅ CORRECT: Transform direction then add to world position
+const worldPosition = new THREE.Vector3();
+object.matrixWorld.decompose(worldPosition, new THREE.Quaternion(), new THREE.Vector3());
+const transformedOffset = localOffset.transformDirection(object.matrixWorld);
+const worldCenter = worldPosition.clone().add(transformedOffset);
+
+// Container bounding boxes use local coordinates within container hierarchy
+const localCenter = container.worldToLocal(worldCenter.clone());
+boundingBoxHelper.position.copy(localCenter);
+container.add(boundingBoxHelper); // Add as child for proper hierarchy
+```
+
+#### Face Detection Consistency
+```javascript
+// MANDATORY PATTERN: All face detection must use FaceDetectionSystem
+// ❌ WRONG: Custom face center calculations in tools/managers
+const bounds = new THREE.Box3().setFromObject(object); // Can have precision issues
+const faceOffset = worldNormal.clone().multiply(size).multiplyScalar(0.5); // Tool-specific offsets
+
+// ✅ CORRECT: Use FaceDetectionSystem for consistent face centers
+const faceDetectionSystem = new FaceDetectionSystem();
+object.updateMatrixWorld(); // Ensure fresh transform data
+const allFaces = faceDetectionSystem.getAllFaces(object);
+const matchingFace = allFaces.find(face => face.worldNormal.distanceTo(targetNormal) < 0.1);
+const faceCenter = matchingFace.center.clone();
+
+// Always use intersection data's worldNormal directly
+const worldNormal = intersectionData.worldNormal || intersectionData.face.normal.clone().transformDirection(object.matrixWorld);
+```
+
+#### Proxy Object Coordinate Consistency
+```javascript
+// MANDATORY PATTERN: All proxy objects must use consistent bounds calculation
+// ❌ WRONG: Using different bounds calculation methods causes visual misalignment
+const bounds1 = new THREE.Box3().setFromObject(object); // May be inaccurate for containers
+const bounds2 = object.userData.width; // May not match actual geometry
+
+// ✅ CORRECT: Use consistent accurate bounds calculation across all systems
+let bounds;
+if (object.isContainer && object.getObjectGeometryBounds) {
+    bounds = object.getObjectGeometryBounds(object); // Precise container bounds
+} else {
+    bounds = new THREE.Box3().setFromObject(object); // Standard geometry bounds
+}
+const center = bounds.getCenter(new THREE.Vector3());
+const size = bounds.getSize(new THREE.Vector3());
+
+// All proxy objects (highlights, bounding boxes, snap targets) use same bounds
+```
+
+#### Highlight Update Integration Points
+```javascript
+// Property changes trigger highlight updates
+SelectionManager.updateObjectDimension() → highlightManager.updateSelectionHighlights()
+SelectionManager.handleObjectPositionChange() → updateContainerAndChildHighlights()
+
+// Container operations update all affected highlights
+Container.onChildChanged() → SelectionManager.updateContainerAndChildHighlights()
+```
+
+#### Centralized Face Highlighting Rules
+```javascript
+// ESTABLISHED PATTERN: Face highlights only appear on selected objects
+// unless explicitly bypassed for snapping features
+
+// Standard face highlighting (respects selection)
+highlightManager.addFaceHoverHighlight(intersectionData);
+// Will only highlight if object is selected
+
+// Snapping face highlighting (bypasses selection)
+highlightManager.addFaceSnapHighlight(intersectionData); 
+// Will highlight regardless of selection state
+
+// Manual bypass option
+highlightManager.addFaceHoverHighlight(intersectionData, { bypassSelection: true });
+```
+
+#### Container Face Highlighting
+```javascript
+// Container face highlights only appear when the container itself is selected
+// Not when a child is selected - the container must be the selected object
+const container = object.userData?.parentContainer;
+if (container && !selectionManager.isSelected(container)) {
+    return; // No highlight for unselected container faces
+}
+```
+
+#### Tool Face Highlighting Pattern
+```javascript
+// ❌ OLD PATTERN - Scattered selection checks in tools
+if (this.selectionManager.isSelected(targetObject)) {
+    this.highlightManager.addFaceHoverHighlight(intersectionData);
+}
+
+// ✅ NEW PATTERN - Centralized selection checking  
+// Just call addFaceHoverHighlight - selection is checked inside HighlightManager
+this.highlightManager.addFaceHoverHighlight(intersectionData);
+
+// For snapping features that need to bypass selection
+this.highlightManager.addFaceSnapHighlight(intersectionData);
+```
+
 #### Files Involved
-- `/js/core/HighlightManager.js` - Centralized highlight management
-- `/js/geometry/HighlightSystem.js` - Low-level highlight creation (legacy support)
+- `/js/core/HighlightManager.js` - Centralized highlight management with world positioning and selection checking
+- `/js/geometry/SelectionManager.js` - Coordinate highlight updates with container changes
+- `/js/geometry/Container.js` - Notify selection manager of child changes
 - All tool files - Integration with centralized system
+
+---
+
+## SelectionManager Architecture Optimization
+
+### **OPTIMIZATION GUIDANCE** 🔧
+**Status**: Large single-file implementation with clear refactoring boundaries
+
+#### ✅ Optimization Completed
+The SelectionManager has been successfully optimized from ~1450 lines to ~732 lines through strategic module extraction.
+
+```javascript
+// ✅ Optimized Architecture (IMPLEMENTED)
+class SelectionManager {
+    constructor(sceneManager, highlightManager) {
+        // Core selection state only
+        this.selectedObjects = new Set();
+        this.hoveredObject = null;
+        this.selectedFace = null;
+        
+        // ✅ Extracted UI manager
+        this.propertyPanelManager = new PropertyPanelManager(this, highlightManager);
+        
+        // Centralized hierarchical state
+        this.hierarchicalState = {
+            lastClickTime: 0,
+            lastClickedObject: null,
+            currentDepthMap: new Map(),
+            doubleClickThreshold: 400
+        };
+    }
+}
+```
+
+#### ✅ Completed Extractions
+
+**PropertyPanelManager** (✅ COMPLETED - 600+ lines)
+- Located at `/js/ui/PropertyPanelManager.js`
+- Handles all UI generation: `updatePropertyPanel()`, `showObjectProperties()`
+- Manages all input interactions: `setupPropertyInputListeners()`, `setupDragControls()`
+- **Clean separation**: UI logic completely separated from selection logic
+- **Maintained coupling**: Delegates back to SelectionManager for core property changes
+
+#### ✅ Architecture Benefits Achieved
+
+1. **Reduced Complexity**: SelectionManager now focuses purely on selection logic (~732 lines)
+2. **Clear Separation**: UI concerns separated from core selection functionality
+3. **Maintainable Code**: Property panel changes don't affect selection behavior
+4. **Testable Components**: Each manager has focused, testable responsibilities
+
+#### Remaining Optimization Opportunities
+
+**LayoutPropertyManager** (150+ lines) - *Optional Future Enhancement*
+- Could extract `handleLayoutModeChange()`, `handleLayoutSizeChange()`, `handleFillWeightChange()`
+- Low priority since auto-layout system integration is working well
+
+**HierarchicalSelectionHandler** (155+ lines) - *Architecture consideration*
+- Currently centralized in SelectionManager as `hierarchicalState` and `handleToolClick()`
+- Successfully consolidated from scattered tool-specific implementations
+- **Recommendation**: Keep centralized - provides consistent behavior across all tools
 
 ---
 
@@ -746,13 +927,19 @@ snapCache: Map with 100ms timeout
 
 ### When Changing Visual Feedback
 - [ ] Uses established color standards
-- [ ] Updates HighlightSystem consistently
+- [ ] Updates HighlightManager consistently (not legacy HighlightSystem)
 - [ ] Maintains visual hierarchy (selection > hover > temp)
 - [ ] Handles performance implications
 - [ ] Tests with both objects and containers
 - [ ] **Updates HighlightManager configuration** instead of hardcoding
+- [ ] **Uses matrixWorld.decompose()** for all highlight positioning
+- [ ] **Triggers updateContainerAndChildHighlights()** for container changes
 - [ ] **Considers tool and context-specific overrides**
 - [ ] **Tests highlight behavior across different tools**
+- [ ] **Verifies correct positioning within container hierarchies**
+- [ ] **Uses centralized face highlighting** - calls addFaceHoverHighlight() without selection checks
+- [ ] **Uses addFaceSnapHighlight()** for snapping features that bypass selection requirements
+- [ ] **Ensures container face highlights** only appear when container itself is selected
 
 ### When Modifying Snapping Behavior
 - [ ] **Updates SnapManager configuration** rather than tool-specific code
@@ -1294,6 +1481,8 @@ Priority files identified for centralized architecture migration:
 | 1.0 | 2025-01-23 | Initial comprehensive documentation |
 | 1.1 | 2025-01-23 | Added centralized highlighting and snapping systems |
 | 2.0 | 2025-08-23 | Added centralized material, state, object, camera, and configuration management |
+| 2.1 | 2025-08-29 | Updated highlighting system to established pattern with hierarchical positioning; added SelectionManager optimization guidance |
+| 2.2 | 2025-08-31 | Centralized face highlighting logic in HighlightManager with selection checking and snapping bypass options |
 
 ---
 

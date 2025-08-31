@@ -5,11 +5,15 @@
  * tool-specific and object-type specific customizations through configuration.
  */
 class HighlightManager {
-    constructor(scene, camera, canvas, materialManager = null) {
+    constructor(scene, camera, canvas, materialManager = null, selectionManager = null) {
         this.scene = scene;
         this.camera = camera;
         this.canvas = canvas;
         this.materialManager = materialManager;
+        this.selectionManager = selectionManager;
+        
+        // Control highlight visibility during tool interactions
+        this.highlightsVisible = true;
         
         // Configuration for different highlight types and contexts
         this.config = {
@@ -146,8 +150,6 @@ class HighlightManager {
         const config = this.getHighlightConfig('selection', objectType);
         const finalConfig = { ...config, ...options };
         
-        console.log(`HIGHLIGHT: Adding selection highlight for ${object.userData?.id} with config:`, finalConfig);
-        
         this.removeSelectionHighlight(object);
         
         let highlight = null;
@@ -258,10 +260,21 @@ class HighlightManager {
     }
     
     clearTemporaryHighlights() {
+        if (!this.activeHighlights) {
+            console.warn('HIGHLIGHT: activeHighlights not initialized yet, skipping clear');
+            return;
+        }
+        
+        if (!this.activeHighlights.temporary) {
+            console.warn('HIGHLIGHT: temporary highlights not initialized, skipping clear');
+            return;
+        }
+        
         this.activeHighlights.temporary.forEach((info, id) => {
             this.disposeHighlight(info.highlight);
         });
         this.activeHighlights.temporary.clear();
+        console.log('HIGHLIGHT: Cleared all temporary highlights');
     }
     
     addFaceHighlight(object, faceData, options = {}) {
@@ -290,7 +303,7 @@ class HighlightManager {
         }
     }
     
-    // Face hover highlighting - tool-aware
+    // Face hover highlighting - tool-aware with centralized selection checking
     addFaceHoverHighlight(intersectionData, options = {}) {
         if (!intersectionData || !intersectionData.face) return;
         
@@ -299,11 +312,35 @@ class HighlightManager {
         const config = this.getHighlightConfig('face', objectType);
         const finalConfig = { ...config, ...options };
         
-        // Check if we already have a face highlight for this object
-        const existing = this.activeHighlights.face.get(object);
-        if (existing && existing.type === 'hover') {
-            // Already have a hover highlight for this object, no need to recreate
+        // CENTRALIZED SELECTION LOGIC: Face highlights should only appear on selected objects
+        // unless bypassed for snapping features
+        const bypassSelectionCheck = finalConfig.bypassSelection || false;
+        
+        if (!bypassSelectionCheck && this.selectionManager && !this.selectionManager.isSelected(object)) {
+            // Object is not selected and we're not bypassing selection check
+            // Only snapping highlights should bypass this requirement
             return;
+        }
+        
+        // For container faces, ensure the container itself is selected (not just a child)
+        if (!bypassSelectionCheck && object.userData?.parentContainer && this.selectionManager) {
+            const container = object.userData.parentContainer;
+            if (!this.selectionManager.isSelected(container)) {
+                // Container face should only highlight when container is selected
+                return;
+            }
+        }
+        
+        // Check if we already have the same face highlight for this object
+        const existing = this.activeHighlights.face.get(object);
+        if (existing && existing.type === 'hover' && existing.faceData) {
+            // Compare if it's the same face by checking face indices
+            const currentFaceIndex = intersectionData.faceIndex;
+            const existingFaceIndex = existing.faceData.faceIndex;
+            if (currentFaceIndex === existingFaceIndex) {
+                // Same face, no need to recreate
+                return;
+            }
         }
         
         // Face hover highlight added (reduced logging)
@@ -312,7 +349,8 @@ class HighlightManager {
         
         const faceData = {
             face: intersectionData.face,
-            worldNormal: intersectionData.face.normal.clone().transformDirection(object.matrixWorld).normalize(),
+            faceIndex: intersectionData.faceIndex,
+            worldNormal: intersectionData.worldNormal || intersectionData.face.normal.clone().transformDirection(object.matrixWorld).normalize(),
             point: intersectionData.point
         };
         
@@ -336,6 +374,13 @@ class HighlightManager {
         }
     }
     
+    // Snapping face highlight - bypasses selection requirements
+    addFaceSnapHighlight(intersectionData, options = {}) {
+        // Force bypass selection checking for snapping features
+        const snapOptions = { ...options, bypassSelection: true };
+        this.addFaceHoverHighlight(intersectionData, snapOptions);
+    }
+    
     clearFaceHoverHighlights() {
         const toRemove = [];
         this.activeHighlights.face.forEach((info, object) => {
@@ -347,6 +392,12 @@ class HighlightManager {
         toRemove.forEach(object => {
             this.removeFaceHoverHighlight(object);
         });
+    }
+    
+    // Face highlighting for snapping features - bypasses selection requirements
+    addFaceSnapHighlight(intersectionData, options = {}) {
+        const snapOptions = { ...options, bypassSelection: true };
+        return this.addFaceHoverHighlight(intersectionData, snapOptions);
     }
     
     // Highlight Creation Methods
@@ -367,9 +418,15 @@ class HighlightManager {
         );
         
         if (highlight) {
-            highlight.position.copy(object.position);
-            highlight.rotation.copy(object.rotation);
-            highlight.scale.copy(object.scale);
+            // Use world transformation to account for container hierarchies
+            const worldPosition = new THREE.Vector3();
+            const worldQuaternion = new THREE.Quaternion();
+            const worldScale = new THREE.Vector3();
+            object.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+            
+            highlight.position.copy(worldPosition);
+            highlight.setRotationFromQuaternion(worldQuaternion);
+            highlight.scale.copy(worldScale);
             highlight.userData = { 
                 isHighlight: true, 
                 highlightType: 'edge',
@@ -399,9 +456,16 @@ class HighlightManager {
             });
         
         const highlight = new THREE.LineSegments(wireframe, material);
-        highlight.position.copy(object.position);
-        highlight.rotation.copy(object.rotation);
-        highlight.scale.copy(object.scale);
+        
+        // Use world transformation to account for container hierarchies
+        const worldPosition = new THREE.Vector3();
+        const worldQuaternion = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+        object.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+        
+        highlight.position.copy(worldPosition);
+        highlight.setRotationFromQuaternion(worldQuaternion);
+        highlight.scale.copy(worldScale);
         highlight.userData = { 
             isHighlight: true, 
             highlightType: 'wireframe',
@@ -593,26 +657,47 @@ class HighlightManager {
     }
     
     createProperFaceGeometry(object, worldNormal) {
-        // Create geometry that exactly matches the face dimensions
-        const width = object.userData.width || 2;
-        const height = object.userData.height || 1;
-        const depth = object.userData.depth || 3;
+        // MANDATORY ARCHITECTURE PATTERN: Use consistent bounds calculation hierarchy
+        let bounds;
+        if (object.isContainer && object.getObjectGeometryBounds) {
+            bounds = object.getObjectGeometryBounds(object);
+        } else if (object.userData && object.userData.width !== undefined) {
+            // Use precise userData dimensions with world transform
+            const worldPosition = new THREE.Vector3();
+            const worldQuaternion = new THREE.Quaternion();
+            const worldScale = new THREE.Vector3();
+            object.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+            
+            bounds = new THREE.Box3();
+            bounds.setFromCenterAndSize(
+                worldPosition,
+                new THREE.Vector3(
+                    object.userData.width * worldScale.x,
+                    object.userData.height * worldScale.y,
+                    object.userData.depth * worldScale.z
+                )
+            );
+        } else {
+            bounds = new THREE.Box3().setFromObject(object);
+        }
+        
+        const size = bounds.getSize(new THREE.Vector3());
         
         if (object.geometry instanceof THREE.BoxGeometry) {
             // Determine which face we're highlighting based on normal
             if (Math.abs(worldNormal.y) > 0.7) {
                 // Top/bottom face - use width x depth
-                return new THREE.PlaneGeometry(width, depth);
+                return new THREE.PlaneGeometry(size.x, size.z);
             } else if (Math.abs(worldNormal.x) > 0.7) {
                 // Left/right face - use depth x height  
-                return new THREE.PlaneGeometry(depth, height);
+                return new THREE.PlaneGeometry(size.z, size.y);
             } else if (Math.abs(worldNormal.z) > 0.7) {
                 // Front/back face - use width x height
-                return new THREE.PlaneGeometry(width, height);
+                return new THREE.PlaneGeometry(size.x, size.y);
             }
         } else if (object.geometry instanceof THREE.PlaneGeometry) {
             // For rectangles/planes, use the actual dimensions
-            return new THREE.PlaneGeometry(width, height);
+            return new THREE.PlaneGeometry(size.x, size.y);
         }
         
         // Fallback
@@ -627,30 +712,30 @@ class HighlightManager {
             return object.position.clone();
         }
         
-        // For boxes and other 3D objects, calculate face offset
-        const width = object.userData.width || 2;
-        const height = object.userData.height || 1;
-        const depth = object.userData.depth || 3;
+        // MANDATORY ARCHITECTURE PATTERN: Use FaceDetectionSystem for ALL face center calculations
+        object.updateMatrixWorld(); // ALWAYS call before face detection
         
-        // Start with local face center offset
-        let localOffset = new THREE.Vector3();
-        
-        // Determine face offset based on normal direction
-        if (Math.abs(worldNormal.y) > 0.7) {
-            // Top or bottom face
-            localOffset.y = (height / 2) * Math.sign(worldNormal.y);
-        } else if (Math.abs(worldNormal.x) > 0.7) {
-            // Left or right face
-            localOffset.x = (width / 2) * Math.sign(worldNormal.x);
-        } else if (Math.abs(worldNormal.z) > 0.7) {
-            // Front or back face
-            localOffset.z = (depth / 2) * Math.sign(worldNormal.z);
+        if (!this.faceDetectionSystem) {
+            this.faceDetectionSystem = new window.FaceDetectionSystem();
         }
         
-        // Transform to world space using object's transformation matrix
-        const worldFaceCenter = localOffset.applyMatrix4(object.matrixWorld);
+        const allFaces = this.faceDetectionSystem.getAllFaces(object);
+        const matchingFace = allFaces.find(face => {
+            return face.worldNormal.distanceTo(worldNormal) < 0.1;
+        });
         
-        return worldFaceCenter;
+        if (matchingFace) {
+            return matchingFace.center.clone();
+        }
+        
+        // If no matching face found, use the first face center as fallback
+        if (allFaces.length > 0) {
+            return allFaces[0].center.clone();
+        }
+        
+        // Final emergency fallback - should rarely be reached
+        console.warn('ARCHITECTURE_VIOLATION: Using emergency fallback face center calculation');
+        return object.position.clone();
     }
     
     // Utility Methods
@@ -670,9 +755,15 @@ class HighlightManager {
     }
     
     updateHighlightTransform(highlight, object) {
-        highlight.position.copy(object.position);
-        highlight.rotation.copy(object.rotation);
-        highlight.scale.copy(object.scale);
+        // Use world transformation to account for container hierarchies
+        const worldPosition = new THREE.Vector3();
+        const worldQuaternion = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+        object.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
+        
+        highlight.position.copy(worldPosition);
+        highlight.setRotationFromQuaternion(worldQuaternion);
+        highlight.scale.copy(worldScale);
         highlight.updateMatrix();
     }
     
@@ -729,6 +820,18 @@ class HighlightManager {
     
     onSelectionChanged(selectedObjects) {
         this.setContext({ isMultiSelect: selectedObjects.length > 1 });
+    }
+    
+    onObjectChanged(object) {
+        // Automatically update highlight positions when objects change
+        if (this.hasSelectionHighlight(object)) {
+            this.updateHighlightPositions([object]);
+        }
+    }
+    
+    hasSelectionHighlight(object) {
+        const highlightGroup = this.scene.getObjectByName(`selection_highlight_${object.userData.id}`);
+        return !!highlightGroup;
     }
     
     // Legacy HighlightSystem compatibility methods
@@ -809,7 +912,7 @@ class HighlightManager {
     }
     
     updateEdgeHighlightThickness() {
-        // Update edge highlight thickness based on camera distance
+        // Update edge highlight thickness to maintain pixel-accurate size as camera moves
         this.activeHighlights.selection.forEach((info, object) => {
             if (info.config.type === 'edge' && info.highlight && info.highlight.children) {
                 info.highlight.children.forEach(tube => {
@@ -820,18 +923,19 @@ class HighlightManager {
                         return;
                     }
                     
+                    // Calculate pixel-based thickness
                     const fov = this.camera.fov || 75;
                     const canvasHeight = this.canvas.clientHeight || 600;
                     const pixelsToWorldScale = (distanceToCamera * Math.tan(fov * Math.PI / 360)) / (canvasHeight / 2);
-                    let tubeRadius = info.config.thickness * pixelsToWorldScale;
+                    const targetRadius = (info.config.thickness * pixelsToWorldScale) / 2;
                     
-                    if (!isFinite(tubeRadius) || tubeRadius <= 0) {
-                        tubeRadius = 0.01;
-                    }
+                    // Get original radius and calculate scale factor
+                    const originalRadius = tube.userData.originalRadius || 0.005;
+                    const scaleFactor = Math.max(targetRadius / originalRadius, 0.1); // Minimum scale
                     
-                    // Update tube geometry if it has the scale method
-                    if (tube.scale) {
-                        tube.scale.setScalar(tubeRadius);
+                    // Apply scale only to radius (X and Z), keep length (Y)
+                    if (tube.scale && isFinite(scaleFactor)) {
+                        tube.scale.set(scaleFactor, 1, scaleFactor);
                     }
                 });
             }
@@ -860,32 +964,22 @@ class HighlightManager {
             const length = direction.length();
             
             if (length > 0.001) { // Only create tube if edge has meaningful length
-                // Calculate screen-space thickness with safety checks
+                // Calculate proper pixel-based thickness
                 const center = start.clone().add(end).multiplyScalar(0.5);
                 const distanceToCamera = this.camera.position.distanceTo(center);
                 
-                // Safety checks to prevent NaN
-                if (!isFinite(distanceToCamera) || distanceToCamera <= 0) {
-                    console.warn('HIGHLIGHT: Invalid distance to camera for edge highlight:', distanceToCamera);
-                    continue;
-                }
-                
-                const fov = this.camera.fov || 75; // Fallback FOV
-                const canvasHeight = this.canvas.clientHeight || 600; // Fallback height
-                
+                // Convert pixels to world units based on camera distance and FOV
+                const fov = this.camera.fov || 75;
+                const canvasHeight = this.canvas.clientHeight || 600;
                 const pixelsToWorldScale = (distanceToCamera * Math.tan(fov * Math.PI / 360)) / (canvasHeight / 2);
-                let tubeRadius = thickness * pixelsToWorldScale;
                 
-                // Ensure tubeRadius is valid and has a minimum size for visibility
-                if (!isFinite(tubeRadius) || tubeRadius <= 0) {
-                    tubeRadius = 0.01; // Fallback radius
-                    console.warn('HIGHLIGHT: Using fallback radius for edge highlight');
-                } else if (tubeRadius < 0.005) {
-                    // Ensure minimum visibility
-                    tubeRadius = Math.max(tubeRadius, 0.005);
-                    console.log('HIGHLIGHT: Enforcing minimum tube radius:', tubeRadius);
-                }
-                console.log('HIGHLIGHT: Creating edge tube with radius:', tubeRadius, 'thickness setting:', thickness, 'distance:', distanceToCamera);
+                // Calculate tube radius: thickness in pixels converted to world units
+                let tubeRadius = (thickness * pixelsToWorldScale) / 2; // Divide by 2 since thickness is diameter
+                
+                // Ensure minimum radius for visibility
+                tubeRadius = Math.max(tubeRadius, 0.005);
+                
+                console.log('HIGHLIGHT: Creating edge tube with radius:', tubeRadius, 'thickness (pixels):', thickness, 'distance:', distanceToCamera.toFixed(1));
                 
                 const tubeGeometry = new THREE.CylinderGeometry(tubeRadius, tubeRadius, length, 8);
                 const tubeMaterial = this.materialManager ? 
@@ -908,8 +1002,9 @@ class HighlightManager {
                 tube.castShadow = false;
                 tube.receiveShadow = false;
                 
-                // Store original length for thickness updates
+                // Store original dimensions for thickness updates
                 tube.userData.originalLength = length;
+                tube.userData.originalRadius = tubeRadius;
                 
                 // Position the tube at the center of the edge
                 if (isFinite(center.x) && isFinite(center.y) && isFinite(center.z)) {
@@ -971,32 +1066,30 @@ class HighlightManager {
         const faceObjects = new Map();
         
         // Store current highlight targets (NOTE: don't use old config, get fresh config)
-        this.activeHighlights.selection.forEach((info) => {
-            if (info.object) {
+        this.activeHighlights.selection.forEach((info, object) => {
+            if (object && object.userData && object.userData.id) {
                 // Get fresh config with updated thickness/colors
-                const freshConfig = this.getHighlightConfig('selection', info.object.userData.type);
-                selectionObjects.set(info.object.userData.id, { object: info.object, config: freshConfig });
+                const freshConfig = this.getHighlightConfig('selection', object.userData.type);
+                selectionObjects.set(object.userData.id, { object: object, config: freshConfig });
             }
         });
         
-        this.activeHighlights.hover.forEach((info) => {
-            if (info.object) {
-                const freshConfig = this.getHighlightConfig('hover', info.object.userData.type);
-                hoverObjects.set(info.object.userData.id, { object: info.object, config: freshConfig });
+        this.activeHighlights.hover.forEach((info, object) => {
+            if (object && object.userData && object.userData.id) {
+                const freshConfig = this.getHighlightConfig('hover', object.userData.type);
+                hoverObjects.set(object.userData.id, { object: object, config: freshConfig });
             }
         });
         
-        this.activeHighlights.temporary.forEach((info) => {
-            if (info.object) {
-                const freshConfig = this.getHighlightConfig('temporary', info.object.userData.type);
-                temporaryObjects.set(info.object.userData.id, { object: info.object, config: freshConfig });
-            }
+        this.activeHighlights.temporary.forEach((info, id) => {
+            // Temporary highlights use string IDs as keys, not objects
+            temporaryObjects.set(id, { info: info, id: id });
         });
         
-        this.activeHighlights.face.forEach((info) => {
-            if (info.object) {
-                const freshConfig = this.getHighlightConfig('face', info.object.userData.type);
-                faceObjects.set(info.object.userData.id, { object: info.object, config: freshConfig });
+        this.activeHighlights.face.forEach((info, object) => {
+            if (object && object.userData && object.userData.id) {
+                const freshConfig = this.getHighlightConfig('face', object.userData.type);
+                faceObjects.set(object.userData.id, { object: object, config: freshConfig, faceData: info.faceData });
             }
         });
         
@@ -1021,9 +1114,9 @@ class HighlightManager {
             this.addHoverHighlight(object, config);
         });
         
-        faceObjects.forEach(({ object, config }) => {
+        faceObjects.forEach(({ object, config, faceData }) => {
             console.log('HIGHLIGHT: Recreating face highlight for object:', object.userData.id);
-            this.addFaceHighlight(object, config);
+            this.addFaceHighlight(object, faceData, config);
         });
         
         // Note: temporary highlights are intentionally not recreated as they're transient
@@ -1045,6 +1138,118 @@ class HighlightManager {
         this.activeHighlights.hover.clear();
         this.activeHighlights.temporary.clear();
         this.activeHighlights.face.clear();
+    }
+    
+    /**
+     * Hide all highlights (useful during tool interactions)
+     */
+    hideHighlights() {
+        this.highlightsVisible = false;
+        this.setAllHighlightsVisibility(false);
+        console.log('HIGHLIGHT: All highlights hidden');
+    }
+    
+    /**
+     * Hide only hover and temporary highlights, keep selection highlights visible
+     * This is better for move operations where we want selection to stay visible
+     */
+    hideNonSelectionHighlights() {
+        // Hide hover highlights
+        this.activeHighlights.hover.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = false;
+            }
+        });
+        
+        // Hide temporary highlights
+        this.activeHighlights.temporary.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = false;
+            }
+        });
+        
+        // Hide face highlights
+        this.activeHighlights.face.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = false;
+            }
+        });
+        
+        console.log('HIGHLIGHT: Non-selection highlights hidden');
+    }
+    
+    /**
+     * Show all highlights (including those hidden by hideNonSelectionHighlights)
+     */
+    showAllHighlights() {
+        this.setAllHighlightsVisibility(true);
+        console.log('HIGHLIGHT: All highlights shown');
+    }
+    
+    /**
+     * Show all highlights (restore after tool interactions)
+     */
+    showHighlights() {
+        this.highlightsVisible = true;
+        this.setAllHighlightsVisibility(true);
+        console.log('HIGHLIGHT: All highlights shown');
+    }
+    
+    /**
+     * Update highlight positions for moved objects
+     * This should be called when objects are moved to keep highlights in sync
+     */
+    updateHighlightPositions(objects) {
+        objects.forEach(object => {
+            const highlightInfo = this.activeHighlights.selection.get(object);
+            if (highlightInfo && highlightInfo.highlight) {
+                // For edge highlights, recreate them at the new position
+                if (highlightInfo.config.type === 'edge') {
+                    // Remove old highlight
+                    this.disposeHighlight(highlightInfo.highlight);
+                    
+                    // Create new highlight at current object position
+                    const newHighlight = this.createEdgeHighlight(object, highlightInfo.config);
+                    if (newHighlight) {
+                        highlightInfo.highlight = newHighlight;
+                        // Note: Removed verbose logging to avoid spam during moves
+                    }
+                }
+            }
+        });
+    }
+    
+    /**
+     * Set visibility of all active highlights
+     */
+    setAllHighlightsVisibility(visible) {
+        // Hide/show selection highlights
+        this.activeHighlights.selection.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = visible;
+            }
+        });
+        
+        // Hide/show hover highlights
+        this.activeHighlights.hover.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = visible;
+            }
+        });
+        
+        // Hide/show temporary highlights
+        this.activeHighlights.temporary.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = visible;
+            }
+        });
+        
+        // Hide/show face highlights
+        this.activeHighlights.face.forEach((info) => {
+            if (info.highlight) {
+                info.highlight.visible = visible;
+            }
+        });
     }
 }
 

@@ -279,8 +279,12 @@ export class InputManager {
     }
 
     duplicateSelected() {
-        console.log('Duplicate selected - Not yet implemented');
-        // TODO: Implement duplication
+        // Delegate to main app's duplication functionality
+        if (window.modlerApp) {
+            window.modlerApp.duplicateSelectedObjects();
+        } else {
+            console.log('Duplicate selected - App not available');
+        }
     }
 
     makeComponent() {

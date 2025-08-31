@@ -12,6 +12,10 @@ class SelectTool extends Tool {
         this.objectManager = objectManager;
         this.configManager = configManager;
         this.cursor = 'default';
+        this.lastHoveredObject = null;
+        this.lastHoveredFace = null;
+        
+        this.isInternalSelection = false; // Flag to track selections made by this tool
     }
 
     onMouseDown(event, intersectionData) {
@@ -20,24 +24,16 @@ class SelectTool extends Tool {
         console.log('SELECTTOOL: MouseDown event received, active:', this.isActive);
         console.log('SELECTTOOL: Intersection data:', intersectionData);
         
-        // Handle selection
+        // Use centralized hierarchical selection logic
         if (intersectionData && intersectionData.object.userData.selectable) {
-            let targetObject = intersectionData.object;
+            this.isInternalSelection = true;
+            const selectedObject = this.selectionManager.handleToolClick(event, intersectionData, 'select');
+            this.isInternalSelection = false;
             
-            // If clicking on container proxy, select the actual container
-            if (intersectionData.object.userData.isContainerProxy) {
-                targetObject = intersectionData.object.userData.parentContainer;
-                console.log('SELECT: Clicked on container proxy, selecting container:', targetObject.userData.id);
-            } else {
-                console.log('SELECTTOOL: Selecting object:', intersectionData.object.userData.id);
+            if (selectedObject) {
+                console.log('SELECTTOOL: Selected object:', selectedObject.userData.id);
             }
             
-            // Select object (with multi-select support via Shift)
-            if (event.shiftKey) {
-                this.selectionManager.toggleSelection(targetObject);
-            } else {
-                this.selectionManager.selectOnly(targetObject);
-            }
         } else {
             console.log('SELECTTOOL: No selectable object found');
         }
@@ -75,24 +71,40 @@ class SelectTool extends Tool {
         
         // Update hover highlighting using centralized system
         if (this.highlightManager) {
-            // Clear previous hover highlights  
-            this.clearHoverHighlights();
+            // Check if object or face changed
+            const currentObject = intersectionData?.object;
+            const currentFace = intersectionData?.face;
+            const currentFaceIndex = intersectionData?.faceIndex;
             
-            // Add face hover highlight for current intersection
-            if (intersectionData && intersectionData.object.userData.selectable && intersectionData.face) {
-                let targetIntersection = intersectionData;
+            // Create a unique identifier for the current face (object + face index)
+            const currentFaceId = currentObject && currentFace ? 
+                `${currentObject.uuid}_${currentFaceIndex}` : null;
+            const lastFaceId = this.lastHoveredObject && this.lastHoveredFace ? 
+                `${this.lastHoveredObject.uuid}_${this.lastHoveredFace.index}` : null;
+            
+            // Update if object changed OR face changed on the same object
+            if (currentObject !== this.lastHoveredObject || currentFaceId !== lastFaceId) {
+                // Clear previous hover highlights when object or face changes
+                this.clearHoverHighlights();
+                this.lastHoveredObject = currentObject;
+                this.lastHoveredFace = currentFace ? { index: currentFaceIndex, face: currentFace } : null;
                 
-                // Handle container proxy
-                if (intersectionData.object.userData.isContainerProxy) {
-                    targetIntersection = {
-                        ...intersectionData,
-                        object: intersectionData.object.userData.parentContainer
-                    };
+                // Add face hover highlight for current intersection
+                if (intersectionData && intersectionData.object.userData.selectable && intersectionData.face) {
+                    let targetIntersection = intersectionData;
+                    
+                    // Handle container proxy
+                    if (intersectionData.object.userData.isContainerProxy) {
+                        targetIntersection = {
+                            ...intersectionData,
+                            object: intersectionData.object.userData.parentContainer
+                        };
+                    }
+                    
+                    // Selection checking is now centralized in HighlightManager.addFaceHoverHighlight()
+                    this.highlightManager.addFaceHoverHighlight(targetIntersection);
+                    console.log('SelectTool: Added face hover highlight for object:', targetIntersection.object.userData.id, 'face:', currentFaceIndex);
                 }
-                
-                // For select tool, show face highlights for any object (not just selected)
-                this.highlightManager.addFaceHoverHighlight(targetIntersection);
-                console.log('SelectTool: Added face hover highlight');
             }
         } else {
             // Fallback to legacy system
@@ -142,6 +154,11 @@ class SelectTool extends Tool {
         
         // Clear any hover highlights when deactivating
         this.clearHoverHighlights();
+        this.lastHoveredObject = null;
+        this.lastHoveredFace = null;
+        
+        // Reset centralized hierarchical selection state
+        this.selectionManager.resetHierarchicalState();
     }
     
     clearHoverHighlights() {
@@ -171,6 +188,17 @@ class SelectTool extends Tool {
                 activeTool: 'select',
                 isMultiSelect: selectedObjects.length > 1
             });
+        }
+    }
+    
+    // Hierarchical Selection Methods (moved to SelectionManager for reuse across all tools)
+    
+    // Called when selection changes from external sources (like hierarchy panel)
+    onExternalSelectionChange() {
+        // Only reset depth tracking if this is not an internal selection
+        if (!this.isInternalSelection) {
+            console.log('SELECTTOOL: External selection change detected, resetting depth tracking');
+            this.selectionManager.resetHierarchicalState();
         }
     }
 }

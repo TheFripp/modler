@@ -1,4 +1,4 @@
-export class Grid {
+class Grid {
     constructor(scene) {
         this.scene = scene;
         this.gridSize = 100;
@@ -126,3 +126,6 @@ export class Grid {
         }
     }
 }
+
+// Export for module use
+window.Grid = Grid;

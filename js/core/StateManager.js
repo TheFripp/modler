@@ -531,6 +531,46 @@ class StateManager {
         return cloned;
     }
     
+    deepMerge(target, source) {
+        if (source === null || typeof source !== 'object') return source;
+        if (target === null || typeof target !== 'object') return this.deepClone(source);
+        
+        // Handle Sets
+        if (source instanceof Set) {
+            return new Set([...source]);
+        }
+        if (target instanceof Set && source instanceof Set) {
+            return new Set([...target, ...source]);
+        }
+        
+        // Handle Maps  
+        if (source instanceof Map) {
+            return new Map([...source]);
+        }
+        if (target instanceof Map && source instanceof Map) {
+            return new Map([...target, ...source]);
+        }
+        
+        // Handle Arrays - replace entirely
+        if (Array.isArray(source)) return this.deepClone(source);
+        
+        // Handle Objects - merge recursively
+        const result = this.deepClone(target);
+        Object.keys(source).forEach(key => {
+            if (typeof source[key] === 'object' && source[key] !== null && 
+                typeof result[key] === 'object' && result[key] !== null &&
+                !Array.isArray(source[key]) && 
+                !(source[key] instanceof Set) && 
+                !(source[key] instanceof Map)) {
+                result[key] = this.deepMerge(result[key], source[key]);
+            } else {
+                result[key] = this.deepClone(source[key]);
+            }
+        });
+        
+        return result;
+    }
+    
     /**
      * Get state summary for debugging
      */
